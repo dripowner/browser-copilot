@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__sequential-thinking__sequentialthinking",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__query-docs",
+      "mcp__serena__find_symbol",
+      "Bash(uv pip list:*)",
+      "Bash(curl:*)",
+      "Bash(python:*)",
+      "mcp__serena__list_dir",
+      "mcp__serena__activate_project",
+      "mcp__serena__check_onboarding_performed",
+      "mcp__serena__onboarding",
+      "mcp__serena__write_memory",
+      "mcp__serena__get_current_config",
+      "Bash(uv run ruff:*)",
+      "Bash(uv add:*)",
+      "Bash(uv run pytest:*)",
+      "mcp__serena__search_for_pattern",
+      "mcp__serena__get_symbols_overview",
+      "mcp__serena__think_about_collected_information",
+      "mcp__serena__find_referencing_symbols",
+      "mcp__serena__replace_symbol_body",
+      "Bash(tokei:*)",
+      "mcp__serena__initial_instructions",
+      "Bash(xargs ls:*)",
+      "mcp__serena__read_memory",
+      "mcp__serena__list_memories",
+      "mcp__serena__edit_memory"
+    ]
+  }
+}
