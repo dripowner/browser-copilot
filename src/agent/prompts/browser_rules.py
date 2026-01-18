@@ -106,42 +106,11 @@ browser_run_code(code=`async (page) => {
 - Скроллинга страницы
 - Извлечения данных (чтение)
 
-### Современные Playwright локаторы (ОБЯЗАТЕЛЬНО)
+### Playwright локаторы - см. детальный справочник
 
-**КРИТИЧНО: getByRole() принимает ТОЛЬКО ОДНУ роль (строку), НЕ массив!**
+**КРИТИЧНО:** `getByRole()` принимает ТОЛЬКО строку, НЕ массив! Для множественных типов элементов используй `locator()`.
 
-❌ **НИКОГДА:**
-```javascript
-page.getByRole(['button', 'link'])  // InvalidSelectorError!
-```
-
-✅ **ПРАВИЛЬНО - для МНОЖЕСТВЕННЫХ типов используй locator():**
-```javascript
-// Кнопки И ссылки - через locator()
-page.locator('button, a, [role="button"], [role="link"]')
-
-// Для ОДНОГО типа - getByRole()
-page.getByRole('button')
-```
-
-**Используй getBy* методы для ОДНОГО типа элементов:**
-
-✅ **Правильно (accessibility-first):**
-- `page.getByRole('button', { name: 'Submit' })` - по ARIA роли (ТОЛЬКО одна роль!)
-- `page.getByText('Click here')` - по видимому тексту
-- `page.getByPlaceholder('Email')` - по placeholder
-- `page.getByLabel('Username')` - по label
-
-✅ **Для множественных типов - locator():**
-- `page.locator('button, a')` - кнопки И ссылки
-- `page.locator('.product, article, [class*="item"]')` - разные классы
-
-❌ **Избегай (менее надежно):**
-- `page.locator('button')` - слишком общий (лучше getByRole)
-- `page.locator('#submit-btn')` - зависит от ID
-- `page.locator('.btn-primary')` - зависит от CSS классов
-
-Современные локаторы более надежны, читаемы и следуют accessibility best practices.
+Детальный синтаксис локаторов см. в секции "Playwright Page API Patterns" → "Поиск элементов (Локаторы)".
 
 ### КРИТИЧНО: Стратегия сбора контекста страницы
 
@@ -293,131 +262,44 @@ browser_run_code(code=`async (page) => {
 - Возвращай `JSON.stringify()` для сложных объектов
 - Проверяй существование через `count() > 0` перед взаимодействием
 
-### Автоматическое ожидание
-
-Playwright **автоматически ждет** до 30 секунд перед действиями:
-- Не нужен явный wait в большинстве случаев
-- `page.getByText('Welcome').click()` автоматически ждет появления элемента
-
-**Когда нужен явный wait:**
-```javascript
-// Ждать загрузки страницы
-await page.waitForLoadState('networkidle');
-
-// Ждать конкретного элемента (если нужен timeout > 30 сек)
-await page.locator('.results').waitFor({ timeout: 60000 });
-```
-
-❌ **НЕ используй фиксированные задержки:**
-```javascript
-await page.waitForTimeout(3000);  // Антипаттерн!
-```
+**Ожидание элементов:** См. секцию "Playwright Page API Patterns" → "Ожидание (Waiting)" для синтаксиса.
 
 ### КРИТИЧНО: Работа с SPA (Single Page Applications)
 
 **Проблема:** Современные сайты (Яндекс, Google, магазины) загружают контент динамически БЕЗ перезагрузки страницы.
 
-**ОБЯЗАТЕЛЬНЫЕ правила для SPA:**
+**ОБЯЗАТЕЛЬНЫЕ стратегические правила:**
 
-1. **НИКОГДА не используй долгие waitForLoadState('networkidle') для SPA:**
-   ```javascript
-   // ❌ ПЛОХО - может ждать ВЕЧНО (SPA делают фоновые запросы)
-   await page.waitForLoadState('networkidle', { timeout: 60000 });
+1. **НЕ используй долгие `waitForLoadState('networkidle')` для SPA** - может ждать вечно (фоновые запросы)
+   - Используй короткий timeout (5-10 сек) или вообще не используй networkidle
 
-   // ✅ ПРАВИЛЬНО - короткий timeout ИЛИ вообще не используй networkidle
-   try {
-     await page.waitForLoadState('networkidle', { timeout: 5000 });
-   } catch (e) {
-     // Игнорируем timeout - для SPA это нормально
-   }
-   ```
-
-2. **ВСЕГДА жди КОНКРЕТНЫЕ элементы после клика, НЕ абстрактное состояние:**
-   ```javascript
-   // ✅ ПРАВИЛЬНО - клик по категории в магазине
-   await page.getByText('Напитки').click();
-
-   // ОБЯЗАТЕЛЬНО жди появления продуктов!
-   await page.locator('.product, article, [class*="product"], [class*="card"]')
-             .first()
-             .waitFor({ state: 'visible', timeout: 10000 });
-
-   // Теперь безопасно извлекать
-   const productsCount = await page.locator('.product, article').count();
-   ```
+2. **ВСЕГДА жди КОНКРЕТНЫЕ элементы после клика:**
+   - После клика по категории → жди появления `.product` элементов
+   - После фильтра → жди изменения `count()` элементов
+   - НЕ жди абстрактное "networkidle" - жди КОНКРЕТНЫЙ результат действия
 
 3. **Проверяй ИЗМЕНЕНИЕ DOM после действия:**
-   ```javascript
-   // Запомнить начальное состояние
-   const before = await page.locator('.item').count();
-
-   // Клик по фильтру
-   await page.getByRole('button', { name: 'Filter' }).click();
-
-   // Подождать ИЗМЕНЕНИЯ count()
-   await page.waitForFunction(
-     (initial) => document.querySelectorAll('.item').length !== initial,
-     before,
-     { timeout: 8000 }
-   );
-   ```
+   - Запомни `count()` ДО клика
+   - После клика жди изменения count через `waitForFunction()`
+   - Или жди появления конкретного элемента через `waitFor({ state: 'visible' })`
 
 4. **Обрабатывай попапы/модалки ПЕРЕД основными действиями:**
-   ```javascript
-   // Проверить попапы СРАЗУ после загрузки
-   const popup = page.locator('[role="dialog"], .modal, [data-testid*="popup"]');
-   if (await popup.count() > 0) {
-     const closeBtn = popup.locator('button').filter({ hasText: /ок|закрыть|позже|продолж/i });
-     if (await closeBtn.count() > 0) {
-       await closeBtn.first().click();
-       await page.waitForTimeout(1000); // Короткая пауза для анимации
-     }
-   }
+   - Сразу после загрузки проверь попапы
+   - Закрой ВСЕ попапы перед работой с контентом
+   - Проверь что попап действительно закрылся через `waitFor({ state: 'hidden' })`
 
-   // ТЕПЕРЬ работаем с основным контентом
-   ```
+5. **Используй множественные селекторы:**
+   - `'.product, article, [class*="product"], [class*="card"]'` - надежнее чем один класс
+   - Классы могут меняться - используй несколько вариантов
 
-5. **Используй множественные селекторы для надежности:**
-   ```javascript
-   // ✅ ПРАВИЛЬНО - несколько вариантов для одного типа элементов
-   const products = page.locator(
-     '[data-testid*="product"], .product, article, [class*="product"], [class*="card"], [class*="item"]'
-   );
+6. **ВСЕГДА проверяй `count() > 0` ПЕРЕД извлечением данных**
+   - Если count === 0 после клика → контент еще не загрузился → жди или выброси ошибку
 
-   // НЕ один конкретный класс - он может измениться
-   ```
+**Типичная ошибка - ЗАЦИКЛИВАНИЕ:**
+- Клик → не ждешь загрузки → count() === 0 → думаешь что клик не сработал → кликаешь снова → цикл
+- **РЕШЕНИЕ:** Клик → ОБЯЗАТЕЛЬНО жди появления элементов → проверяй count() > 0 → продолжай
 
-6. **Проверяй count() > 0 ПЕРЕД извлечением данных:**
-   ```javascript
-   const items = page.locator('.product');
-   const count = await items.count();
-
-   if (count === 0) {
-     throw new Error('No products found after filter - DOM might not be loaded yet');
-   }
-
-   // Теперь безопасно извлекать
-   for (let i = 0; i < Math.min(count, 10); i++) {
-     const name = await items.nth(i).locator('.name').textContent();
-   }
-   ```
-
-**Типичная ошибка - ЗАЦИКЛИВАНИЕ на SPA:**
-```javascript
-// ❌ ПЛОХО - клик без проверки результата
-await page.getByText('Категория').click();
-const products = await page.locator('.product').count();  // Может быть 0!
-// Агент решает что клик не сработал → повторяет → зацикливание
-
-// ✅ ПРАВИЛЬНО - клик С проверкой загрузки
-await page.getByText('Категория').click();
-
-// ОБЯЗАТЕЛЬНО жди появления продуктов
-await page.locator('.product').first().waitFor({ state: 'visible', timeout: 10000 });
-
-// Теперь count() точно > 0
-const products = await page.locator('.product').count();
-```
+**Конкретные примеры кода** см. в секции "Playwright Page API Patterns" → "Работа с динамическим контентом (SPA)".
 
 ### Паттерны восстановления после ошибок
 
@@ -447,35 +329,7 @@ const products = await page.locator('.product').count();
 - Проверить что нет попапов/модалок поверх элемента
 - Увеличить timeout для медленных анимаций
 
-### Примеры типичных операций
+### Примеры кода
 
-**Навигация и ожидание:**
-```javascript
-async (page) => {
-  await page.goto('https://example.com');
-  await page.waitForLoadState('networkidle');
-  return 'Page loaded';
-}
-```
-
-**Заполнение формы:**
-```javascript
-async (page) => {
-  await page.getByPlaceholder('Email').fill('user@example.com');
-  await page.getByPlaceholder('Password').fill('password123');
-  await page.getByRole('button', { name: 'Login' }).click();
-  return 'Form submitted';
-}
-```
-
-**Извлечение информации:**
-```javascript
-async (page) => {
-  const title = await page.title();
-  const url = page.url();
-  return JSON.stringify({ title, url });
-}
-```
-
-Все остальные паттерны см. в секции "Playwright Page API Patterns"!
+Все конкретные примеры кода (навигация, заполнение форм, извлечение данных) см. в секции **"Playwright Page API Patterns"** → "Примеры типичных задач".
 """
