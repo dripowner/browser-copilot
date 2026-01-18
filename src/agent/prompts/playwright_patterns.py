@@ -105,11 +105,40 @@ async (page) => {
 
 ### Поиск элементов (Локаторы)
 
+**КРИТИЧНО: getByRole() принимает ТОЛЬКО ОДНУ роль (строку)!**
+
+❌ **НИКОГДА НЕ ДЕЛАЙ ТАК:**
+```javascript
+// ОШИБКА: массив не поддерживается!
+page.getByRole(['button', 'link'])  // InvalidSelectorError!
+page.getByRole([...])               // ВСЕГДА ошибка!
+```
+
+✅ **ПРАВИЛЬНО - для одной роли:**
+```javascript
+page.getByRole('button')      // Только кнопки
+page.getByRole('link')        // Только ссылки
+page.getByRole('textbox')     // Только текстовые поля
+```
+
+✅ **ПРАВИЛЬНО - для НЕСКОЛЬКИХ типов элементов используй locator():**
+```javascript
+// Найти кнопки И ссылки одновременно
+page.locator('button, a, [role="button"], [role="link"]')
+
+// Найти элементы с классами
+page.locator('.product, .item, article')
+
+// Комбинация - ТОЛЬКО через locator()
+page.locator('[data-testid*="product"], .product, article')
+```
+
 **Современные локаторы (РЕКОМЕНДУЕТСЯ - accessibility-first):**
 ```javascript
 async (page) => {
-  // По ARIA роли
+  // По ARIA роли - ТОЛЬКО ОДНА роль!
   const submitBtn = page.getByRole('button', { name: 'Submit' });
+  const allButtons = page.getByRole('button');  // Все кнопки
 
   // По видимому тексту
   const link = page.getByText('Click here');
@@ -130,13 +159,34 @@ async (page) => {
 }
 ```
 
+**Фильтрация локаторов (hasText, has, filter):**
+```javascript
+async (page) => {
+  // Фильтр по тексту (регулярное выражение)
+  const drinkCategory = page.getByRole('button').filter({ hasText: /напит|вода/i });
+
+  // Множественные типы с фильтром - через locator()
+  const anyDrinkBtn = page.locator('button, a, [role="button"]').filter({ hasText: /напит/i });
+
+  // Фильтр по вложенному элементу
+  const cardWithButton = page.locator('.product-card').filter({
+    has: page.getByRole('button', { name: 'Add to cart' })
+  });
+
+  return 'Filtered locators created';
+}
+```
+
 **CSS/XPath селекторы (если необходимо):**
 ```javascript
 async (page) => {
-  // CSS селекторы
+  // CSS селекторы - для МНОЖЕСТВЕННЫХ типов
   const element = page.locator('button.submit');
   const byId = page.locator('#email-input');
   const byClass = page.locator('.error-message');
+
+  // Множественные типы элементов
+  const interactive = page.locator('button, a, input');
 
   // XPath (редко нужно)
   const byXPath = page.locator('xpath=//button[@type="submit"]');
@@ -227,17 +277,54 @@ async (page) => {
 
 ### Извлечение данных
 
-**Текст элемента:**
+**Helper функция для очистки текста от спецсимволов:**
 ```javascript
-async (page) => {
-  const title = await page.locator('h1').textContent();
-  return title.trim();
+// Очистить текст от невидимых Unicode символов (Gmail добавляет их защиты от парсеров)
+function cleanText(text) {
+  if (!text) return text;
+  return text
+    .replace(/\u200c/g, '')        // Zero-width non-joiner
+    .replace(/\u200b/g, '')        // Zero-width space
+    .replace(/\u200d/g, '')        // Zero-width joiner
+    .replace(/\xa0/g, ' ')         // Non-breaking space → обычный пробел
+    .replace(/\s+/g, ' ')          // Множественные пробелы → один
+    .trim();
 }
 ```
 
-**Извлечение из множественных элементов:**
+**Текст элемента (с очисткой):**
 ```javascript
 async (page) => {
+  function cleanText(text) {
+    if (!text) return text;
+    return text
+      .replace(/\u200c/g, '')
+      .replace(/\u200b/g, '')
+      .replace(/\u200d/g, '')
+      .replace(/\xa0/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  const title = await page.locator('h1').textContent();
+  return cleanText(title);
+}
+```
+
+**Извлечение из множественных элементов (с очисткой):**
+```javascript
+async (page) => {
+  function cleanText(text) {
+    if (!text) return text;
+    return text
+      .replace(/\u200c/g, '')
+      .replace(/\u200b/g, '')
+      .replace(/\u200d/g, '')
+      .replace(/\xa0/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   const items = page.locator('.product-item');
   const count = await items.count();
 
@@ -245,7 +332,10 @@ async (page) => {
   for (let i = 0; i < count; i++) {
     const name = await items.nth(i).locator('.name').textContent();
     const price = await items.nth(i).locator('.price').textContent();
-    products.push({ name: name.trim(), price: price.trim() });
+    products.push({
+      name: cleanText(name),
+      price: cleanText(price)
+    });
   }
 
   return JSON.stringify(products);
@@ -485,21 +575,29 @@ async (page) => {
 
 2. **Playwright автоматически ждет** - в большинстве случаев не нужен явный wait. Локаторы ждут до 30 секунд по умолчанию
 
-3. **Используй async/await** для всех операций с page - все методы асинхронные
+3. **ДЛЯ SPA: ВСЕГДА жди изменения DOM после взаимодействия** - клик может загружать контент асинхронно. Используй waitFor(), waitForFunction() или проверяй изменение count() элементов
 
-4. **Возвращай понятный результат** последней строкой функции - это то, что увидишь в response
+4. **Проверяй что контент действительно загрузился** - после клика по категории/фильтру/кнопке убедись что новые элементы появились (count > 0)
 
-5. **Для сложных данных используй JSON.stringify()** - это гарантирует корректную сериализацию
+5. **Используй async/await** для всех операций с page - все методы асинхронные
 
-6. **Обрабатывай ошибки** - проверяй существование элементов через count() перед взаимодействием
+6. **Возвращай понятный результат** последней строкой функции - это то, что увидишь в response
 
-7. **Для вкладок используй page.context().pages()** - это массив с 0-based индексами (первая вкладка = index 0)
+7. **Для сложных данных используй JSON.stringify()** - это гарантирует корректную сериализацию
 
-8. **Проверяй состояние загрузки** - используй waitForLoadState('networkidle') после навигации
+8. **ВСЕГДА очищай извлеченный текст через cleanText()** - веб-страницы (особенно Gmail, соцсети) добавляют невидимые Unicode символы (\u200c, \u200b, \xa0) для защиты от парсеров. cleanText() удаляет их и нормализует пробелы
 
-9. **Не используй фиксированные задержки** - Playwright автоматически ждет, page.waitForTimeout() - антипаттерн
+9. **Обрабатывай ошибки** - проверяй существование элементов через count() перед взаимодействием
 
-10. **Для множественных элементов используй count() и nth()** - не полагайся на индексацию через CSS nth-child
+10. **Для вкладок используй page.context().pages()** - это массив с 0-based индексами (первая вкладка = index 0)
+
+11. **ДЛЯ SPA: НЕ используй долгие waitForLoadState('networkidle')** - современные SPA делают фоновые запросы бесконечно. Вместо этого жди КОНКРЕТНЫЕ элементы с коротким timeout (5-10 сек). Только для обычных сайтов можно использовать networkidle с timeout: 10000
+
+12. **Избегай фиксированных задержек** - используй их только как последнее средство для нестабильных SPA. Предпочитай waitFor() с проверкой конкретного условия
+
+13. **Для множественных элементов используй count() и nth()** - не полагайся на индексацию через CSS nth-child
+
+14. **Если элементы не найдены после действия** - возможно контент загружается динамически. Добавь явное ожидание появления или используй waitForFunction()
 
 ---
 
@@ -507,6 +605,10 @@ async (page) => {
 
 ❌ **НЕ делай так:**
 ```javascript
+// КРИТИЧЕСКАЯ ОШИБКА: getByRole() с массивом
+page.getByRole(['button', 'link'])  // InvalidSelectorError!
+// getByRole() принимает ТОЛЬКО строку, НЕ массив!
+
 // Забыл await
 page.getByRole('button').click();  // Не сработает!
 
@@ -516,25 +618,164 @@ page.locator('button').click();  // Лучше getByRole
 // Фиксированная задержка
 await page.waitForTimeout(3000);  // Антипаттерн!
 
+// ДОЛГОЕ ожидание networkidle для SPA (ОЧЕНЬ МЕДЛЕННО)
+await page.waitForLoadState('networkidle', { timeout: 60000 });  // Может ждать минуту!
+// SPA делают бесконечные фоновые запросы - networkidle не наступит
+
 // Не проверил существование
 const text = await page.locator('.missing').textContent();  // Может упасть
+
+// НЕ очистил текст от спецсимволов
+const email = await page.locator('.sender').textContent();
+// Получишь: "karpov.courses\xa0\u200c\u200c\u200c"
 ```
 
 ✅ **Делай так:**
 ```javascript
+// Для МНОЖЕСТВЕННЫХ типов элементов - locator() с CSS селектором
+const buttonsAndLinks = page.locator('button, a, [role="button"], [role="link"]');
+
+// Для ОДНОГО типа - getByRole()
+const onlyButtons = page.getByRole('button');
+
 // Всегда await
 await page.getByRole('button', { name: 'Submit' }).click();
 
 // Современные локаторы
 await page.getByRole('button', { name: 'Submit' }).click();
 
-// Умное ожидание
-await page.waitForLoadState('networkidle');
+// ДЛЯ SPA: жди КОНКРЕТНЫЕ элементы с коротким timeout (БЫСТРО)
+await page.locator('.product-card').first().waitFor({ state: 'visible', timeout: 5000 });
+// Или проверяй изменение count()
+await page.waitForFunction(
+  () => document.querySelectorAll('.product').length > 0,
+  { timeout: 5000 }
+);
+
+// Для обычных сайтов: короткий timeout на networkidle
+await page.waitForLoadState('networkidle', { timeout: 10000 });  // Макс 10 сек
 
 // Проверка существования
 const locator = page.locator('.optional');
 if (await locator.count() > 0) {
   const text = await locator.textContent();
+}
+
+// ВСЕГДА очищай извлеченный текст
+function cleanText(text) {
+  if (!text) return text;
+  return text.replace(/\u200c/g, '').replace(/\u200b/g, '')
+             .replace(/\u200d/g, '').replace(/\xa0/g, ' ')
+             .replace(/\s+/g, ' ').trim();
+}
+const email = cleanText(await page.locator('.sender').textContent());
+// Получишь: "karpov.courses" - чистый текст!
+```
+
+---
+
+### Работа с динамическим контентом (SPA)
+
+**ВАЖНО:** Современные веб-приложения часто используют динамическую загрузку контента без перезагрузки страницы.
+
+**Ожидание появления контента после взаимодействия:**
+```javascript
+async (page) => {
+  // Клик по элементу, который загружает контент
+  await page.getByRole('button', { name: 'Load More' }).click();
+
+  // Ждать появления НОВОГО контента
+  await page.locator('.new-item').first().waitFor({ state: 'visible', timeout: 10000 });
+
+  // Теперь безопасно извлекать данные
+  const items = page.locator('.new-item');
+  const count = await items.count();
+
+  return `Loaded ${count} new items`;
+}
+```
+
+**Проверка изменений DOM после клика:**
+```javascript
+async (page) => {
+  // Запомнить начальное состояние
+  const initialCount = await page.locator('.item').count();
+
+  // Выполнить действие
+  await page.getByRole('button', { name: 'Filter' }).click();
+
+  // Подождать изменения DOM
+  await page.waitForFunction(
+    (initial) => document.querySelectorAll('.item').length !== initial,
+    initialCount,
+    { timeout: 5000 }
+  );
+
+  const newCount = await page.locator('.item').count();
+  return `Items changed from ${initialCount} to ${newCount}`;
+}
+```
+
+**Ожидание завершения AJAX запросов:**
+```javascript
+async (page) => {
+  await page.getByRole('button', { name: 'Search' }).click();
+
+  // Ждать когда сеть успокоится
+  await page.waitForLoadState('networkidle', { timeout: 10000 });
+
+  // Или ждать исчезновения спиннера
+  const spinner = page.locator('.loading-spinner');
+  if (await spinner.count() > 0) {
+    await spinner.waitFor({ state: 'hidden', timeout: 10000 });
+  }
+
+  return 'Content loaded';
+}
+```
+
+**Обработка модальных окон и оверлеев:**
+```javascript
+async (page) => {
+  // Проверить наличие модального окна
+  const modal = page.locator('dialog, [role="dialog"], .modal');
+  const modalCount = await modal.count();
+
+  if (modalCount > 0 && await modal.isVisible()) {
+    // Модальное окно открыто - взаимодействовать с ним
+    const confirmBtn = modal.locator('button:has-text("OK"), button:has-text("Подтвердить")');
+    if (await confirmBtn.count() > 0) {
+      await confirmBtn.click();
+      // Ждать закрытия модалки
+      await modal.waitFor({ state: 'hidden', timeout: 5000 });
+      return 'Modal confirmed and closed';
+    }
+  }
+
+  return 'No modal found';
+}
+```
+
+**Множественные попытки для нестабильных элементов:**
+```javascript
+async (page) => {
+  let attempts = 0;
+  const maxAttempts = 3;
+
+  while (attempts < maxAttempts) {
+    try {
+      // Попробовать найти и кликнуть элемент
+      await page.getByRole('button', { name: 'Submit' }).click({ timeout: 5000 });
+      return 'Clicked successfully';
+    } catch (e) {
+      attempts++;
+      if (attempts >= maxAttempts) {
+        throw new Error(`Failed after ${maxAttempts} attempts: ${e.message}`);
+      }
+      // Подождать перед повтором
+      await page.waitForTimeout(1000);
+    }
+  }
 }
 ```
 
@@ -562,6 +803,17 @@ async (page) => {
 **2. Извлечение списка элементов:**
 ```javascript
 async (page) => {
+  function cleanText(text) {
+    if (!text) return text;
+    return text
+      .replace(/\u200c/g, '')
+      .replace(/\u200b/g, '')
+      .replace(/\u200d/g, '')
+      .replace(/\xa0/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   const items = page.locator('.product-card');
   const count = await items.count();
 
@@ -570,7 +822,10 @@ async (page) => {
     const item = items.nth(i);
     const title = await item.locator('h3').textContent();
     const price = await item.locator('.price').textContent();
-    products.push({ title: title.trim(), price: price.trim() });
+    products.push({
+      title: cleanText(title),
+      price: cleanText(price)
+    });
   }
 
   return JSON.stringify(products);
