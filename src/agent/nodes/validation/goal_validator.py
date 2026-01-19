@@ -35,41 +35,72 @@ def create_goal_validator(llm):
         original_task = state.get("original_task")
         messages = state["messages"]
 
-        # Use LLM to compare result with goal (with evidence requirement)
-        validation_prompt = f"""
-Original task: {original_task}
+        # Use LLM to analyze goal achievement with task type detection
+        validation_prompt = f"""Original task: {original_task}
 
 Execution history: {_summarize_history(messages)}
 
-Has the original task goal been achieved?
+Analyze whether the task goal has been achieved.
 
-IMPORTANT: Provide EVIDENCE-BASED assessment.
+Step 1: Determine task type
+- ACTION task: requires changing state (add, create, send, delete, buy, book, etc.)
+- RESEARCH task: requires gathering information (find, show, check, what is, how many, etc.)
 
-For research tasks (information gathering):
-- Evidence = the data you extracted from the browser
-- Example: "Found price: $99, rating: 4.5 stars"
+Step 2: Evaluate evidence
+- For ACTION tasks: Did the agent VERIFY the final state after performing actions?
+  * Performing an action (clicking, filling) is NOT the same as achieving the goal
+  * The agent must check that the state actually changed as expected
+  * Example: adding to cart requires checking the cart shows the items
+  
+- For RESEARCH tasks: Did the agent extract and provide the requested information?
+  * The actual data must be present, not just "I searched for it"
 
-For action tasks (state changes):
-- Evidence = verification of state change
-- Example: "Verified cart shows 3 items, total $150"
-- NOT acceptable: "I clicked add button" (action ≠ goal)
+Step 3: Make decision
+Return your assessment in this format:
 
-Return format:
-Status: ACHIEVED / PARTIALLY_ACHIEVED / NOT_ACHIEVED
-Evidence: [concrete facts from browser state]
-Reasoning: [why this evidence proves/disproves goal achievement]
-"""
+TASK_TYPE: ACTION | RESEARCH
+STATUS: ACHIEVED | PARTIALLY_ACHIEVED | NOT_ACHIEVED
+EVIDENCE: [What concrete evidence from the execution history proves/disproves goal achievement?]
+VERIFICATION_DONE: YES | NO [For ACTION tasks - was final state verified?]
+REASONING: [Brief explanation]"""
 
         response = llm.invoke([HumanMessage(content=validation_prompt)])
         decision = response.content
 
-        # Check if response contains evidence (not just reasoning)
-        has_evidence = _check_evidence_quality(decision)
-        if not has_evidence and "ACHIEVED" in decision:
-            # Claimed success but no evidence - require verification
-            logger.warning("Goal claimed achieved but no concrete evidence - requiring verification")
+        # Detect task type from response
+        is_action_task = (
+            "TASK_TYPE: ACTION" in decision or "TASK_TYPE:ACTION" in decision
+        )
+
+        # Check evidence quality based on task type
+        task_type = "action" if is_action_task else "research"
+        has_evidence = _check_evidence_quality(decision, task_type)
+
+        # For action tasks, also check if verification was done
+        verification_done = (
+            "VERIFICATION_DONE: YES" in decision or "VERIFICATION_DONE:YES" in decision
+        )
+
+        if is_action_task and "ACHIEVED" in decision and not verification_done:
+            # Action task claimed complete but no verification
+            logger.warning(
+                "Action task claimed achieved but no state verification - requiring verification"
+            )
             feedback_msg = AIMessage(
-                content="Goal validation requires evidence. For action tasks, verify the final state (check what changed). For research tasks, confirm you extracted the needed data."
+                content="Task appears to involve state changes. Before completing, verify the final state - check that the expected changes actually occurred (not just that actions were performed)."
+            )
+            return Command(
+                update={"messages": [feedback_msg], "goal_achieved": False},
+                goto="agent",
+            )
+
+        if not has_evidence and "ACHIEVED" in decision:
+            # Claimed success but no evidence
+            logger.warning(
+                "Goal claimed achieved but no concrete evidence - requiring verification"
+            )
+            feedback_msg = AIMessage(
+                content="Goal validation requires evidence. Verify the final state to confirm the goal was achieved."
             )
             return Command(
                 update={"messages": [feedback_msg], "goal_achieved": False},
@@ -92,64 +123,111 @@ Reasoning: [why this evidence proves/disproves goal achievement]
             logger.info(f"Goal partially achieved: {decision} - checking quality")
             return Command(update={"goal_achieved": False}, goto="quality_evaluator")
 
-        # Goal achieved
+        # Goal achieved - generate final message for user
         logger.info(f"Goal achieved: {decision}")
-        return Command(update={"goal_achieved": True}, goto=END)
+
+        # Generate user-friendly summary
+        final_message = _generate_final_message(llm, original_task, decision)
+
+        return Command(
+            update={"messages": [final_message], "goal_achieved": True}, goto=END
+        )
 
     return goal_validator
 
 
-def _check_evidence_quality(response: str) -> bool:
+def _generate_final_message(llm, original_task: str, validation_decision: str) -> AIMessage:
     """
-    Check if response contains concrete evidence vs just reasoning.
+    Generate user-friendly final message summarizing task completion.
 
-    Evidence indicators:
-    - Specific values (numbers, URLs, text excerpts)
-    - Verification keywords (verified, checked, shows, contains)
-    - State descriptions (count = X, total = Y, status = Z)
+    Args:
+        llm: ChatOpenAI instance
+        original_task: Original user task
+        validation_decision: LLM's validation analysis with EVIDENCE and REASONING
+
+    Returns:
+        AIMessage with clear summary for user
+    """
+    prompt = f"""Задача пользователя: {original_task}
+
+Анализ выполнения: {validation_decision}
+
+Сформулируй КРАТКИЙ финальный ответ для пользователя (2-4 предложения).
+
+Формат:
+1. Что было сделано (1 предложение)
+2. Конкретный результат (что именно добавлено/найдено/создано, с деталями если есть)
+
+НЕ включай:
+- Технические детали (селекторы, инструменты, шаги)
+- Мета-комментарии о формате ответа
+- Фразы типа "Задача выполнена" без конкретики
+
+Пиши на языке пользователя, понятно и по делу."""
+
+    response = llm.invoke([HumanMessage(content=prompt)])
+    return AIMessage(content=response.content)
+
+
+def _check_evidence_quality(response: str, task_type: str) -> bool:
+    """
+    Check if response contains concrete evidence of goal achievement.
+
+    This is a lightweight heuristic check. The main validation is done by LLM.
+
+    For action tasks: requires indication that final state was verified (not just actions taken).
+    For research tasks: requires indication that data was extracted.
 
     Args:
         response: LLM response text
+        task_type: "action" or "research"
 
     Returns:
-        True if contains evidence, False if only reasoning
+        True if contains evidence pattern, False otherwise
     """
     response_lower = response.lower()
 
-    # Evidence keywords - indicates actual browser state check
-    evidence_keywords = [
-        "verified",
-        "checked",
-        "shows",
-        "contains",
-        "count =",
-        "total =",
-        "found:",
-        "extracted:",
-        "current state",
-        "state shows",
+    # Weak evidence: only mentions actions without state verification
+    action_only_patterns = [
+        "clicked",
+        "filled",
+        "navigated",
+        "searched",
+        "added to cart",  # Action, not verification
+        "submitted",
+        "pressed",
     ]
 
-    # Check for evidence keywords
-    has_keywords = any(keyword in response_lower for keyword in evidence_keywords)
-
-    # Check for numbers (often indicate concrete data)
-    import re
-
-    has_numbers = bool(re.search(r"\d+", response))
-
-    # Weak evidence: only mentions actions without verification
-    weak_patterns = ["clicked", "filled", "navigated", "searched"]
-    only_actions = (
-        any(pattern in response_lower for pattern in weak_patterns)
-        and not has_keywords
+    # Check if response ONLY mentions actions
+    mentions_actions = any(
+        pattern in response_lower for pattern in action_only_patterns
     )
 
-    if only_actions:
+    # State verification indicators (universal, not site-specific)
+    state_verification_patterns = [
+        "verified",
+        "confirmed",
+        "checked",
+        "shows",
+        "displays",
+        "contains",
+        "state:",
+        "result:",
+        "found that",
+        "observed",
+        "current state",
+        "final state",
+    ]
+
+    has_verification = any(
+        pattern in response_lower for pattern in state_verification_patterns
+    )
+
+    # For action tasks: actions alone are NOT sufficient
+    if task_type == "action" and mentions_actions and not has_verification:
         return False
 
-    # Good evidence: keywords + numbers, or just strong keywords
-    return has_keywords or has_numbers
+    return True
 
 
 def _summarize_history(messages, last_n=10):

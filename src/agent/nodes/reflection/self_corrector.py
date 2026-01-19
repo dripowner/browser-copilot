@@ -1,4 +1,4 @@
-"""Auto-corrects common errors like stale references."""
+"""Self-correction node for automatic error recovery using high-level tools."""
 
 from langchain_core.messages import AIMessage
 from langgraph.types import Command
@@ -14,141 +14,156 @@ def create_self_corrector():
     Factory for self corrector.
 
     Returns:
-        Self-correction node function
+        Self-correction node function that provides recovery instructions
+        using high-level browser tools (not raw Playwright API).
     """
 
     def self_corrector(state: BrowserAgentState) -> Command:
         """
-        Auto-correct common errors.
+        Auto-correct common errors using high-level browser tools.
 
         Handles:
-        - Playwright syntax errors (InvalidSelectorError, TypeError)
-        - Viewport errors (switch to JS click)
-        - SPA timeout errors (switch to domcontentloaded)
-        - Stale references (refresh snapshot)
+        - viewport_error: Element outside visible area
+        - timeout / timeout_other: Page load timeout
+        - stale_ref: DOM changed, element reference invalid
+        - element_not_found: Element not found on page
 
-        Returns Command routing to:
-        - "agent" with correction message (LLM applies fix)
+        Returns Command routing to "agent" with recovery instructions.
         """
         error_type = state.get("error_type")
         error_message = state.get("error_message", "")
+
         logger.info(f"Self-correcting error: {error_type}")
 
         correction_msg = None
 
-        # Playwright Syntax Errors - provide explicit correction
-        if error_type == "syntax_error" or "InvalidSelectorError" in error_message:
-            if "unexpected symbol" in error_message or "button, [role=" in error_message:
-                correction_msg = """SYNTAX ERROR DETECTED: Invalid CSS selector in locator().
+        # Viewport Error - element outside visible area
+        if error_type == "viewport_error":
+            correction_msg = """VIEWPORT ERROR: Элемент вне видимой области.
 
-ПРОБЛЕМА: Использован неверный синтаксис селектора (запятая вне кавычек или getByRole с множественными типами).
+ДЕЙСТВИЯ для восстановления:
 
-ИСПРАВЛЕНИЕ:
-1. Если искал НЕСКОЛЬКО типов элементов → используй locator() с полным CSS:
-   ✅ page.locator('button, a, [role="button"]')  // Корректный CSS
-   ❌ page.getByRole('button, link')  // ОШИБКА!
+1. Возможно модалка или overlay блокирует — закрой их:
+   browser_close_modal(strategy="auto")
 
-2. Если искал ОДИН тип → используй getByRole() ТОЛЬКО с одной ролью:
-   ✅ page.getByRole('button')  // Только кнопки
+2. Прокрути к элементу:
+   browser_scroll(target="[твой селектор]")
 
-ДЕЙСТВИЕ: Перепиши предыдущий tool call с ПРАВИЛЬНЫМ синтаксисом согласно этим правилам."""
+3. Повтори исходное действие (browser_click или browser_fill)
 
-            elif "is not a function" in error_message:
-                correction_msg = """SYNTAX ERROR DETECTED: Неправильные скобки для async/await.
+Пример:
+browser_close_modal(strategy="auto")
+browser_scroll(target="button:Оформить заказ")
+browser_click(target="button:Оформить заказ")
 
-ПРОБЛЕМА: Вызов array метода (.slice, .filter) на Promise вместо array.
+Если не помогает — используй browser_explore_page() чтобы найти альтернативный элемент."""
 
-ИСПРАВЛЕНИЕ:
-Оберни allTextContents() в скобки перед вызовом array методов:
-   ✅ (await page.getByRole('button').allTextContents()).slice(0, 10)
-   ❌ await page.getByRole('button').allTextContents().slice(0, 10)
+        # Timeout Error - networkidle specific
+        elif error_type == "timeout":
+            if "networkidle" in error_message.lower():
+                correction_msg = """TIMEOUT: Превышено время ожидания (networkidle).
 
-ДЕЙСТВИЕ: Перепиши предыдущий tool call с ПРАВИЛЬНЫМИ скобками."""
+ПРИЧИНА: SPA делает бесконечные фоновые запросы.
 
-        # Viewport Errors - switch to JS click strategy
-        elif error_type == "viewport_error" or "outside of the viewport" in error_message:
-            viewport_count = state.get("viewport_error_count", 0) + 1
+ДЕЙСТВИЯ:
 
-            if viewport_count >= 2:
-                correction_msg = f"""VIEWPORT ERROR (попытка {viewport_count}): Элемент вне viewport, Playwright не может кликнуть.
+1. Дождись загрузки DOM (быстрее чем networkidle):
+   browser_wait_for_load(state="domcontentloaded")
 
-SWITCH STRATEGY: После 2 viewport errors → используй page.evaluate() JS клик:
+2. Проверь что страница готова:
+   browser_explore_page()
 
-```javascript
-await page.evaluate(() => {{
-  const el = document.querySelector('ваш_селектор');
-  if (el) el.click();
-}});
-```
+3. Продолжай работу с найденными элементами
 
-ДЕЙСТВИЕ: Перепиши предыдущий tool call с JS evaluate вместо обычного click()."""
-
-                return Command(
-                    update={
-                        "messages": [AIMessage(content=correction_msg)],
-                        "viewport_error_count": viewport_count,
-                        "error_type": None,
-                    },
-                    goto="agent",
-                )
+НЕ жди networkidle на SPA сайтах — это может занять бесконечно!"""
             else:
-                correction_msg = """VIEWPORT ERROR: Элемент вне viewport.
+                correction_msg = """TIMEOUT: Превышено время ожидания.
 
-ИСПРАВЛЕНИЕ: Попробуй scrollIntoViewIfNeeded() перед кликом:
+ДЕЙСТВИЯ:
 
-```javascript
-await element.scrollIntoViewIfNeeded();
-await element.click();
-```
+1. Перезагрузи страницу:
+   browser_reload()
 
-ДЕЙСТВИЕ: Retry с scroll перед кликом."""
+2. Дождись загрузки:
+   browser_wait_for_load(state="domcontentloaded")
 
-                return Command(
-                    update={
-                        "messages": [AIMessage(content=correction_msg)],
-                        "viewport_error_count": viewport_count,
-                        "error_type": None,
-                    },
-                    goto="agent",
-                )
+3. Исследуй страницу заново:
+   browser_explore_page()
 
-        # SPA Timeout Errors - switch to domcontentloaded
-        elif error_type == "timeout" and "networkidle" in error_message:
-            correction_msg = """TIMEOUT ERROR: page.goto с networkidle на SPA.
+4. Найди нужный элемент и повтори действие
 
-ПРОБЛЕМА: SPA делает бесконечные фоновые запросы - networkidle может никогда не наступить!
+Если страница не загружается — проверь подключение к браузеру."""
 
-SWITCH STRATEGY: Используй waitUntil: 'domcontentloaded' вместо networkidle:
+        # Timeout Other - generic timeout
+        elif error_type == "timeout_other":
+            correction_msg = """TIMEOUT: Операция заняла слишком много времени.
 
-```javascript
-await page.goto(url, {
-  waitUntil: 'domcontentloaded',  // БЫСТРО - 1-3 сек
-  timeout: 15000
-});
-```
+ДЕЙСТВИЯ:
 
-ДЕЙСТВИЕ: Перепиши предыдущий goto с domcontentloaded."""
+1. Дождись стабилизации страницы:
+   browser_wait_for_load(state="domcontentloaded")
 
-        # Stale Reference (legacy support)
+2. Проверь что элемент появился:
+   browser_wait_for(target="[твой селектор]", state="visible")
+
+3. Если элемент всё ещё не появляется — исследуй страницу:
+   browser_explore_page()
+
+4. Возможно элемент находится в другом месте или имеет другой селектор."""
+
+        # Stale Reference - DOM changed
         elif error_type == "stale_ref":
-            logger.info("Auto-correction: Stale ref - routing to agent for retry")
-            correction_msg = """STALE REFERENCE: Элемент изменился в DOM.
+            correction_msg = """STALE REFERENCE: DOM изменился, селектор недействителен.
 
-ДЕЙСТВИЕ: Получи новый локатор и повтори операцию."""
+ОБЯЗАТЕЛЬНЫЕ ДЕЙСТВИЯ:
 
-        # Send correction to agent if detected
+1. Исследуй страницу заново — получи НОВЫЕ селекторы:
+   browser_explore_page()
+
+2. В результате найди нужный элемент по тексту или типу
+
+3. Используй НОВЫЙ selector из результата для повтора действия
+
+ВАЖНО:
+- Старый селектор больше НЕ работает — не используй его!
+- browser_explore_page() даст актуальные селекторы
+- Если элемент исчез — проверь URL через browser_get_page_info()"""
+
+        # Element Not Found
+        elif error_type == "element_not_found":
+            correction_msg = """ELEMENT NOT FOUND: Элемент не найден на странице.
+
+ДЕЙСТВИЯ:
+
+1. Возможно элемент ниже — прокрути страницу:
+   browser_scroll(direction="down", amount=500)
+
+2. Исследуй видимые элементы:
+   browser_explore_page()
+
+3. Найди похожий элемент в результатах
+
+Если элемент должен появиться динамически:
+   browser_wait_for(target="[селектор]", state="visible", timeout=10000)
+
+Если элемент всё ещё не найден:
+1. Проверь что ты на правильной странице: browser_get_page_info()
+2. Если URL неправильный — перейди на нужную страницу
+3. Попробуй альтернативный способ достичь цели"""
+
+        # Send correction to agent
         if correction_msg:
-            logger.info(f"Auto-correction: {error_type} - providing fix guidance")
+            logger.info(f"Providing recovery guidance for: {error_type}")
             return Command(
                 update={
                     "messages": [AIMessage(content=correction_msg)],
-                    "error_type": None,  # Clear error
+                    "error_type": None,  # Clear error type
                 },
                 goto="agent",
             )
 
-        # Can't auto-fix - let agent handle through natural reasoning
-        logger.warning(f"Cannot auto-correct error type: {error_type}")
+        # Unknown error - let agent handle naturally
+        logger.warning(f"No recovery strategy for error type: {error_type}")
         return Command(goto="agent")
 
     return self_corrector

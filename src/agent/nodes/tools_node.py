@@ -20,7 +20,8 @@ def _detect_error_in_results(tool_messages: list) -> tuple[str, str | None]:
 
     Returns:
         (error_type, error_message) tuple
-        error_type: "syntax_error", "viewport_error", "timeout", "none"
+        error_type: "viewport_error", "timeout", "timeout_other",
+                    "stale_ref", "element_not_found", "none"
         error_message: Raw error message if error detected
     """
     if not tool_messages:
@@ -33,14 +34,7 @@ def _detect_error_in_results(tool_messages: list) -> tuple[str, str | None]:
 
         content = str(message.content).lower()
 
-        # Playwright Syntax Errors (CRITICAL - must fix syntax)
-        if "invalidselectorerror" in content or "unexpected symbol" in content:
-            return "syntax_error", str(message.content)
-
-        if "is not a function" in content and ("slice" in content or "filter" in content or "map" in content):
-            return "syntax_error", str(message.content)
-
-        # Viewport Errors (need strategy change)
+        # Viewport Errors (need scroll or modal close)
         if "outside of the viewport" in content or "element is not visible" in content:
             return "viewport_error", str(message.content)
 
@@ -48,12 +42,21 @@ def _detect_error_in_results(tool_messages: list) -> tuple[str, str | None]:
         if "timeouterror" in content:
             if "networkidle" in content or "page.goto" in content:
                 return "timeout", str(message.content)
-            # Other timeouts - let agent handle
+            # Other timeouts
             return "timeout_other", str(message.content)
 
-        # Stale Reference
+        # Stale Reference (DOM changed)
         if "ref not found" in content or "stale" in content:
             return "stale_ref", str(message.content)
+
+        # Element Not Found (need scroll or explore)
+        if (
+            "no elements found" in content
+            or "element not found" in content
+            or ("count" in content and "=== 0" in content)
+            or ('"success": false' in content and "not found" in content)
+        ):
+            return "element_not_found", str(message.content)
 
     return "none", None
 
@@ -153,8 +156,15 @@ def create_tools_node(tools):
         # Detect errors in tool results
         error_type, error_message = _detect_error_in_results(tool_messages)
 
-        # Route to self_corrector for auto-fixable errors
-        if error_type in ["syntax_error", "viewport_error", "timeout", "stale_ref"]:
+        # Route to self_corrector for recoverable errors
+        recoverable_errors = [
+            "viewport_error",
+            "timeout",
+            "timeout_other",
+            "stale_ref",
+            "element_not_found",
+        ]
+        if error_type in recoverable_errors:
             logger.warning(f"Detected {error_type} - routing to self_corrector")
             return Command(
                 update={
