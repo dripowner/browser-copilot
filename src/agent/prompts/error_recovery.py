@@ -1,153 +1,47 @@
-"""Стратегии восстановления после ошибок."""
+"""Стратегии восстановления после ошибок (high-level tools)."""
 
-ERROR_RECOVERY_GUIDE = """## Стратегии восстановления после ошибок
+ERROR_RECOVERY_GUIDE = """## Восстановление после ошибок
 
-### Частые ошибки
+### Таблица: Ошибка → Recovery Tools
 
-**TimeoutError on CDP connection:**
-- Сообщи: "Не могу подключиться к браузеру. Проверьте Edge с --remote-debugging-port=9222"
-- НЕ вызывай browser_install
-- Останови выполнение
+| Ошибка | Инструменты для восстановления |
+|--------|-------------------------------|
+| viewport_error | browser_close_modal() → browser_scroll(target) |
+| stale_ref | browser_explore_page() → использовать новые selectors |
+| timeout | browser_wait_for_load(state="domcontentloaded") → browser_reload() |
+| element_not_found | browser_scroll(direction="down") → browser_explore_page() |
+| click_no_effect | browser_close_modal() → browser_get_page_info() → browser_explore_page() |
 
-**Ref not found:**
-- Страница изменилась, refs устарели
-- Решение: browser_snapshot() → найди элемент → повтори с новым ref
+### Частые ситуации
 
-**Network timeout:**
-- Подожди 2-3 секунды, browser_snapshot(), проверь загрузку
-
-**Element not interactive:**
-- Проверь альтернативный подход
+**CDP connection lost:**
+- Сообщи: "Потеряно подключение к браузеру. Требуется перезапуск."
+- НЕ пытайся исправить автоматически
 
 **Authentication required:**
-- Сообщи пользователю, без учетных данных продолжить нельзя
+- Сообщи пользователю через request_user_confirmation()
+- Объясни что именно нужно сделать (войти, ввести код)
+- Дождись ответа "y" и продолжи
 
-**Dynamic content not appearing:**
-- browser_snapshot() снова через 2-3 секунды
+**Modal/Overlay blocks interaction:**
+- browser_close_modal(strategy="auto") закроет большинство модалок
+- Если не помогло — browser_close_modal(strategy="escape")
 
-### Playwright API Errors
+**Page not loading:**
+1. browser_reload() — перезагрузить страницу
+2. browser_wait_for_load(state="domcontentloaded") — дождаться DOM
+3. browser_explore_page() — проверить что загрузилось
 
-**TimeoutError: locator timeout:**
-- Проверь селектор - попробуй более общий
-- Увеличь timeout: `click({ timeout: 60000 })`
-- Используй getByRole вместо CSS селектора
-- Проверь загрузку: `waitForLoadState('networkidle')`
+**Click happened but nothing changed:**
+1. browser_get_page_info() — проверить URL (может уже перешли)
+2. browser_close_modal() — закрыть возможную модалку
+3. browser_explore_page() — найти правильный элемент
 
-**page.context is not a function:**
-- Используй `page.context()` с круглыми скобками
+### Общий паттерн восстановления
 
-**Element not visible / outside viewport:**
-- `await element.scrollIntoViewIfNeeded()`
-- Проверь overlay/модалки
-- `click({ force: true })` только если уверен
-- Альтернативный элемент
-
-**Cannot read property 'textContent' of null:**
-- Проверь: `if (await locator.count() === 0) throw Error(...)`
-- Безопасный доступ: `(await locator.textContent()) || 'default'`
-- Более общий селектор
-
-**Execution context destroyed:**
-- Используй `waitForNavigation()` при переходах
-- Повтори на новой странице
-- Проверь актуальную страницу: `page.context().pages()`
-
-### SPA Errors
-
-**TimeoutError: goto with networkidle:**
-- НЕ создавай новую вкладку! Reuse существующую
-- Переключись на `waitUntil: 'domcontentloaded'`
-- Уменьши timeout до 15 сек
-- Жди КОНКРЕТНЫЕ элементы
-
-**TimeoutError: click outside viewport:**
-1. `scrollIntoViewIfNeeded()` перед кликом
-2. `click({ force: true })` если снова viewport error
-3. После 2 viewport errors → `page.evaluate(() => document.querySelector('btn').click())`
-
-**TimeoutError: waitForFunction():**
-- Попробуй множественные селекторы: `.product, article, [class*="item"]`
-- Увеличь timeout до 15 сек
-- Fallback: `waitForTimeout(2000)` вместо waitForFunction
-- Verify URL изменился
-
-**InvalidSelectorError:**
-- НЕ retry! Исправь синтаксис
-- `page.getByRole('button')` - ТОЛЬКО одна роль
-- `page.locator('button, a')` - для множественных типов
-
-**TypeError: Promise.slice:**
-- Исправь скобки: `(await page.getByRole('button').allTextContents()).slice(0, 10)`
-- НЕ retry!
-
-**Stale element reference:**
-- Получи НОВЫЙ ref через snapshot/locator
-- НЕ retry старую операцию
-
-**Tab proliferation (5+ вкладок):**
-- CLEANUP: Закрой дубликаты, оставь первую с target domain
-- ВСЕГДА reuse существующей вкладки для retry
-
-### "Click without effect"
-
-**Симптомы:**
-- Click success НО URL не изменился
-- Click success НО count = 0
-- Click success НО корзина пустая
-
-**Root Causes:**
-1. Модалка/Overlay блокирует клик → Закрой модалку ПЕРЕД кликом
-2. SPA не готов → `waitForLoadState('domcontentloaded')` + пауза
-3. `force: true` обход → Убери force, дай Playwright проверить
-4. Не тот элемент → Уточни локатор `.not('[hidden]')`
-
-**Recovery (по порядку):**
-
-**Стратегия 1: Закрыть модалки и retry**
-```javascript
-await page.keyboard.press('Escape');
-await page.waitForTimeout(1000);
-await page.locator('button').click();
-```
-
-**Стратегия 2: Дождаться SPA инициализации**
-```javascript
-await page.waitForLoadState('domcontentloaded');
-await page.waitForTimeout(2000);
-await page.locator('button').click();
-```
-
-**Стратегия 3: Прямая навигация через URL**
-```javascript
-const categoryUrl = await page.evaluate(() => btn?.dataset?.url);
-if (categoryUrl) await page.goto(categoryUrl, { waitUntil: 'domcontentloaded' });
-```
-
-**Стратегия 4: Поиск вместо категорий**
-```javascript
-const searchBox = page.locator('input[type="search"]');
-await searchBox.first().fill('query');
-await searchBox.first().press('Enter');
-```
-
-**Критерий успеха:** URL изменился ИЛИ count изменился И count > 0
-
-### Общий паттерн
-
-1. Проанализируй ошибку
-2. Определи категорию:
-   - Syntax Error → ИСПРАВЬ код, НЕ retry
-   - Timing Error → ИЗМЕНИ стратегию (domcontentloaded)
-   - Tab Management → CLEANUP + reuse
-   - Content Error → Альтернативный селектор
-3. Примени правильную стратегию
-4. НЕ создавай новую вкладку для retry
-5. Сообщи пользователю если не можешь восстановиться
-
-### Когда сдаться
-
-После 3 неудачных попыток:
-- Сообщи пользователю о проблеме
-- Предложи ручное вмешательство
-- Спроси стоит ли пробовать другой подход
+1. Система автоматически определит тип ошибки
+2. Ты получишь инструкции с конкретными tools для recovery
+3. Выполни предложенные tools
+4. Повтори исходное действие
+5. Если не помогает — попробуй альтернативный подход
 """
