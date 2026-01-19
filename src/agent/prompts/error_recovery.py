@@ -2,91 +2,152 @@
 
 ERROR_RECOVERY_GUIDE = """## Стратегии восстановления после ошибок
 
-### Частые ошибки и решения
+### Частые ошибки
 
-**"TimeoutError on browserType.connectOverCDP" или "CDP connection failed"**
-→ MCP сервер не может подключиться к браузеру через Chrome DevTools Protocol
-→ ЭТО ТЕХНИЧЕСКАЯ ПРОБЛЕМА КОНФИГУРАЦИИ, НЕ проблема установки браузера!
-→ Решение:
-  - Сообщи пользователю: "Не могу подключиться к браузеру. Проверьте что Edge запущен с флагом --remote-debugging-port=9222 и MCP сервер работает"
-  - НЕ вызывай browser_install - браузер установлен, проблема в подключении
-  - Останови выполнение и попроси пользователя перезапустить MCP сервер
+**TimeoutError on CDP connection:**
+- Сообщи: "Не могу подключиться к браузеру. Проверьте Edge с --remote-debugging-port=9222"
+- НЕ вызывай browser_install
+- Останови выполнение
 
-**"Ref not found in the current page snapshot"**
-→ Страница изменилась, refs устарели
-→ Решение: browser_snapshot() → найди элемент → повтори с новым ref
+**Ref not found:**
+- Страница изменилась, refs устарели
+- Решение: browser_snapshot() → найди элемент → повтори с новым ref
 
-**Network timeout / медленная загрузка**
-→ Дай странице время загрузиться
-→ Решение: Подожди 2-3 секунды, browser_snapshot(), проверь загрузку
+**Network timeout:**
+- Подожди 2-3 секунды, browser_snapshot(), проверь загрузку
 
-**Element not interactive**
-→ Элемент существует но не кликабелен (перекрыт, отключен)
-→ Решение: Проверь snapshot для альтернативного подхода (другой элемент)
+**Element not interactive:**
+- Проверь альтернативный подход
 
-**Authentication required**
-→ Защищенный ресурс требует авторизации
-→ Решение: Сообщи пользователю, без учетных данных продолжить нельзя
+**Authentication required:**
+- Сообщи пользователю, без учетных данных продолжить нельзя
 
-**Dynamic content not appearing**
-→ JavaScript требует времени для рендеринга
-→ Решение: browser_snapshot() снова через 2-3 секунды
+**Dynamic content not appearing:**
+- browser_snapshot() снова через 2-3 секунды
 
 ### Playwright API Errors
 
-**TimeoutError: waiting for locator / Timeout exceeded**
-→ Элемент не появился в течение timeout (по умолчанию 30 секунд)
-→ Причина: Неточный селектор, страница не загрузилась, элемент не рендерится
-→ Решение:
-  1. Проверить что селектор корректный - попробовать более общий локатор
-  2. Увеличить timeout: `await page.getByRole('button').click({ timeout: 60000 })`
-  3. Использовать более надежный локатор (getByRole вместо CSS селектора)
-  4. Проверить загрузку страницы: `await page.waitForLoadState('networkidle')`
+**TimeoutError: locator timeout:**
+- Проверь селектор - попробуй более общий
+- Увеличь timeout: `click({ timeout: 60000 })`
+- Используй getByRole вместо CSS селектора
+- Проверь загрузку: `waitForLoadState('networkidle')`
 
-**Error: page.context is not a function**
-→ Неправильное использование Playwright API
-→ Причина: Забыты круглые скобки при вызове метода
-→ Решение:
-  1. Использовать `page.context()` с круглыми скобками
-  2. Проверить что page передан корректно в async функцию
+**page.context is not a function:**
+- Используй `page.context()` с круглыми скобками
 
-**Error: Element is not visible / Element is outside of the viewport**
-→ Элемент существует но скрыт или находится вне видимой области
-→ Причина: Элемент перекрыт другими элементами, скрыт CSS, вне viewport
-→ Решение:
-  1. Скроллить к элементу: `await element.scrollIntoViewIfNeeded()`
-  2. Проверить что элемент не перекрыт overlay или модальным окном
-  3. Использовать `{ force: true }` только если уверен: `await element.click({ force: true })`
-  4. Попробовать альтернативный элемент для взаимодействия
+**Element not visible / outside viewport:**
+- `await element.scrollIntoViewIfNeeded()`
+- Проверь overlay/модалки
+- `click({ force: true })` только если уверен
+- Альтернативный элемент
 
-**Error: Cannot read property 'textContent' of null**
-→ Элемент не найден, locator вернул null
-→ Причина: Селектор не нашел элемент на странице
-→ Решение:
-  1. Проверить существование перед доступом: `const count = await locator.count(); if (count === 0) throw Error(...)`
-  2. Использовать безопасный доступ: `const text = (await locator.textContent()) || 'default value'`
-  3. Попробовать более общий селектор
-  4. Проверить что страница загружена и элемент должен быть виден
+**Cannot read property 'textContent' of null:**
+- Проверь: `if (await locator.count() === 0) throw Error(...)`
+- Безопасный доступ: `(await locator.textContent()) || 'default'`
+- Более общий селектор
 
-**Error: Execution context was destroyed**
-→ Страница была перезагружена или закрыта во время выполнения
-→ Причина: Навигация произошла во время асинхронной операции
-→ Решение:
-  1. Использовать `waitForNavigation()` при ожидаемых переходах
-  2. Повторить операцию на новой странице
-  3. Проверить что работаете с актуальной страницей через `page.context().pages()`
+**Execution context destroyed:**
+- Используй `waitForNavigation()` при переходах
+- Повтори на новой странице
+- Проверь актуальную страницу: `page.context().pages()`
 
-### Общий паттерн восстановления
+### SPA Errors
 
-1. **Проанализируй сообщение об ошибке** - пойми что не сработало
-2. **Получи свежий контекст** - browser_snapshot() для текущего состояния
-3. **Попробуй альтернативу** - другой элемент, другой подход
-4. **Сообщи пользователю** - если не можешь восстановиться автоматически, объясни и спроси
+**TimeoutError: goto with networkidle:**
+- НЕ создавай новую вкладку! Reuse существующую
+- Переключись на `waitUntil: 'domcontentloaded'`
+- Уменьши timeout до 15 сек
+- Жди КОНКРЕТНЫЕ элементы
+
+**TimeoutError: click outside viewport:**
+1. `scrollIntoViewIfNeeded()` перед кликом
+2. `click({ force: true })` если снова viewport error
+3. После 2 viewport errors → `page.evaluate(() => document.querySelector('btn').click())`
+
+**TimeoutError: waitForFunction():**
+- Попробуй множественные селекторы: `.product, article, [class*="item"]`
+- Увеличь timeout до 15 сек
+- Fallback: `waitForTimeout(2000)` вместо waitForFunction
+- Verify URL изменился
+
+**InvalidSelectorError:**
+- НЕ retry! Исправь синтаксис
+- `page.getByRole('button')` - ТОЛЬКО одна роль
+- `page.locator('button, a')` - для множественных типов
+
+**TypeError: Promise.slice:**
+- Исправь скобки: `(await page.getByRole('button').allTextContents()).slice(0, 10)`
+- НЕ retry!
+
+**Stale element reference:**
+- Получи НОВЫЙ ref через snapshot/locator
+- НЕ retry старую операцию
+
+**Tab proliferation (5+ вкладок):**
+- CLEANUP: Закрой дубликаты, оставь первую с target domain
+- ВСЕГДА reuse существующей вкладки для retry
+
+### "Click without effect"
+
+**Симптомы:**
+- Click success НО URL не изменился
+- Click success НО count = 0
+- Click success НО корзина пустая
+
+**Root Causes:**
+1. Модалка/Overlay блокирует клик → Закрой модалку ПЕРЕД кликом
+2. SPA не готов → `waitForLoadState('domcontentloaded')` + пауза
+3. `force: true` обход → Убери force, дай Playwright проверить
+4. Не тот элемент → Уточни локатор `.not('[hidden]')`
+
+**Recovery (по порядку):**
+
+**Стратегия 1: Закрыть модалки и retry**
+```javascript
+await page.keyboard.press('Escape');
+await page.waitForTimeout(1000);
+await page.locator('button').click();
+```
+
+**Стратегия 2: Дождаться SPA инициализации**
+```javascript
+await page.waitForLoadState('domcontentloaded');
+await page.waitForTimeout(2000);
+await page.locator('button').click();
+```
+
+**Стратегия 3: Прямая навигация через URL**
+```javascript
+const categoryUrl = await page.evaluate(() => btn?.dataset?.url);
+if (categoryUrl) await page.goto(categoryUrl, { waitUntil: 'domcontentloaded' });
+```
+
+**Стратегия 4: Поиск вместо категорий**
+```javascript
+const searchBox = page.locator('input[type="search"]');
+await searchBox.first().fill('query');
+await searchBox.first().press('Enter');
+```
+
+**Критерий успеха:** URL изменился ИЛИ count изменился И count > 0
+
+### Общий паттерн
+
+1. Проанализируй ошибку
+2. Определи категорию:
+   - Syntax Error → ИСПРАВЬ код, НЕ retry
+   - Timing Error → ИЗМЕНИ стратегию (domcontentloaded)
+   - Tab Management → CLEANUP + reuse
+   - Content Error → Альтернативный селектор
+3. Примени правильную стратегию
+4. НЕ создавай новую вкладку для retry
+5. Сообщи пользователю если не можешь восстановиться
 
 ### Когда сдаться
 
-После 3 неудачных попыток одного и того же действия:
+После 3 неудачных попыток:
 - Сообщи пользователю о проблеме
-- Предложи ручное вмешательство если нужно
+- Предложи ручное вмешательство
 - Спроси стоит ли пробовать другой подход
 """

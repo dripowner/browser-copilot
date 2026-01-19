@@ -6,10 +6,7 @@ import re
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.types import Command
 
-from src.agent.prompts import (
-    SYSTEM_PROMPT,
-    SYSTEM_PROMPT_MINIMAL,
-)
+from src.agent.prompts import SYSTEM_PROMPT
 from src.agent.state import BrowserAgentState
 from src.utils.logger import setup_logger
 
@@ -45,18 +42,23 @@ def create_agent_node(llm, tools):
         logger.info(f"Agent node - Messages: {len(state['messages'])}")
 
         messages = state["messages"]
-
-        # Adaptive prompt selection based on message count
         current_step = state.get("current_step", 0)
 
-        if current_step > 25:
-            # After 25+ steps - minimal prompt to save tokens
-            prompt = SYSTEM_PROMPT_MINIMAL
-            logger.info("Using minimal prompt to save tokens (25+ steps)")
-        else:
-            # Standard full prompt (includes ERROR_RECOVERY_GUIDE)
-            prompt = SYSTEM_PROMPT
-            logger.debug("Using standard prompt with error recovery patterns")
+        # Detect looping - если агент работает слишком долго
+        if current_step > 30:
+            logger.error(
+                f"Agent appears stuck after {current_step} steps. "
+                "Routing to strategy_adapter for course correction."
+            )
+            # Роутинг на strategy_adapter для смены подхода
+            return Command(
+                update={},
+                goto="strategy_adapter",
+            )
+
+        # Always use full prompt with all patterns
+        prompt = SYSTEM_PROMPT
+        logger.debug("Using full system prompt")
 
         # Add system prompt if not present
         if not messages or not isinstance(messages[0], SystemMessage):

@@ -54,4 +54,65 @@ Taxonomy неожиданных состояний:
 
 Adaptive reasoning:
 expect the expected, prepare for the unexpected, communicate clearly
+
+### Паттерн: State Verification для action tasks
+Принцип: Различай задачи на сбор информации и задачи на изменение состояния.
+
+**Research task** (информация):
+- User: "Найди цену на товар X"
+- Process: navigate → extract data → return to user
+- Verification: НЕ требуется (результат = извлеченные данные)
+- Completion: когда данные предоставлены пользователю
+
+**Action task** (изменение состояния):
+- User: "Добавь N элементов в контейнер"
+- Process: find elements → execute actions → **VERIFY state changed**
+- Verification: ОБЯЗАТЕЛЬНА (результат = новое состояние системы)
+- Completion: только после проверки финального состояния
+
+Complete workflow для action task:
+```
+1. Task decomposition
+   "Что должно измениться? Как проверю что изменилось?"
+
+2. Execute actions
+   navigate → interact → perform operations
+
+3. State verification (КРИТИЧНО!)
+   - Запомни состояние ДО (или предскажи начальное)
+   - Проверь состояние ПОСЛЕ
+   - Сравни: before ≠ after
+
+4. Evidence collection
+   - Конкретные факты: "counter changed from 0 to 3"
+   - Визуальные доказательства: "container now shows 3 items"
+   - State queries: "check returns confirmed status"
+
+5. Completion
+   Только если verification passed → задача выполнена
+```
+
+**Anti-pattern** (типичная ошибка):
+```
+Task: "Добавь элементы в список"
+❌ WRONG:
+   → find elements
+   → click "add" buttons
+   → assume success
+   → complete ✗
+
+✓ CORRECT:
+   → find elements
+   → click "add" buttons
+   → verify list count increased
+   → verify items visible in list
+   → complete ✓
+```
+
+Key insight: Выполнение действия ≠ Достижение цели
+- Клик может не сработать (modal блокирует)
+- Форма может не отправиться (validation error)
+- Навигация может не произойти (redirect)
+
+**ВСЕГДА** проверяй финальное состояние для action tasks.
 """
