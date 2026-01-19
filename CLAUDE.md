@@ -446,8 +446,6 @@ src/agent/prompts/
     └── complex.py           # Сложные decision-making паттерны
 ```
 
-**ВАЖНО:** `playwright_patterns.py` удалён - весь Playwright код теперь инкапсулирован в high-level tools.
-
 #### Готовые промпт константы
 
 Файл [\_\_init\_\_.py](src/agent/prompts/__init__.py) экспортирует:
@@ -462,7 +460,6 @@ from src.agent.prompts import (
 
 ```python
 # Стандартный промпт
-# PLAYWRIGHT_PATTERNS удалён - код инкапсулирован в browser tools
 # Tools описываются через bind_tools() - не дублируем в промпте
 SYSTEM_PROMPT = "\n\n".join([
     BASE_PROMPT,
