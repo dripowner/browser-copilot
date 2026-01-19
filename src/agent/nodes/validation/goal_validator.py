@@ -55,13 +55,21 @@ Step 2: Evaluate evidence
 - For RESEARCH tasks: Did the agent extract and provide the requested information?
   * The actual data must be present, not just "I searched for it"
 
-Step 3: Make decision
+Step 3: Check data integrity (CRITICAL)
+If the agent provided specific facts (names, prices, quantities, etc.) in their response:
+- Are these facts present in the tool results?
+- Or did the agent "fill in" missing information based on context/expectations?
+
+DATA_INTEGRITY_ISSUE: YES if agent stated facts not found in tool results, NO otherwise
+
+Step 4: Make decision
 Return your assessment in this format:
 
 TASK_TYPE: ACTION | RESEARCH
 STATUS: ACHIEVED | PARTIALLY_ACHIEVED | NOT_ACHIEVED
 EVIDENCE: [What concrete evidence from the execution history proves/disproves goal achievement?]
 VERIFICATION_DONE: YES | NO [For ACTION tasks - was final state verified?]
+DATA_INTEGRITY: OK | ISSUE [Are stated facts backed by tool results?]
 REASONING: [Brief explanation]"""
 
         response = llm.invoke([HumanMessage(content=validation_prompt)])
@@ -80,6 +88,24 @@ REASONING: [Brief explanation]"""
         verification_done = (
             "VERIFICATION_DONE: YES" in decision or "VERIFICATION_DONE:YES" in decision
         )
+
+        # Check for data integrity issues
+        has_data_integrity_issue = (
+            "DATA_INTEGRITY: ISSUE" in decision or "DATA_INTEGRITY:ISSUE" in decision
+        )
+
+        if has_data_integrity_issue and "ACHIEVED" in decision:
+            # Agent stated facts not backed by tool results
+            logger.warning(
+                "Data integrity issue detected - agent stated facts not found in tool results"
+            )
+            feedback_msg = AIMessage(
+                content="Data integrity issue: your response contains specific facts not found in tool results. Re-extract the data using appropriate tools and report only verified information. Do not fill in missing information based on context."
+            )
+            return Command(
+                update={"messages": [feedback_msg], "goal_achieved": False},
+                goto="agent",
+            )
 
         if is_action_task and "ACHIEVED" in decision and not verification_done:
             # Action task claimed complete but no verification
@@ -230,7 +256,7 @@ def _check_evidence_quality(response: str, task_type: str) -> bool:
     return True
 
 
-def _summarize_history(messages, last_n=10):
+def _summarize_history(messages, last_n=15):
     """
     Summarize recent message history for context.
 
@@ -247,5 +273,6 @@ def _summarize_history(messages, last_n=10):
         if hasattr(msg, "tool_calls") and msg.tool_calls:
             summary.append(f"Action: {msg.tool_calls[0]['name']}")
         elif hasattr(msg, "content"):
-            summary.append(f"Result: {msg.content[:100]}...")
+            # Full content for better data integrity validation
+            summary.append(f"Result: {msg.content}")
     return "\n".join(summary)
