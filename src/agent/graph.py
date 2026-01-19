@@ -5,13 +5,11 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import START, StateGraph
 
 from src.agent.nodes.agent_node import create_agent_node
-from src.agent.nodes.reflection.progress_analyzer import create_progress_analyzer
 from src.agent.nodes.reflection.quality_evaluator import create_quality_evaluator
 from src.agent.nodes.reflection.self_corrector import create_self_corrector
 from src.agent.nodes.reflection.strategy_adapter import create_strategy_adapter
 from src.agent.nodes.special.human_in_loop import create_human_in_loop
 from src.agent.nodes.special.memory_manager import create_memory_manager
-from src.agent.nodes.special.progress_reporter import create_progress_reporter
 from src.agent.nodes.tools_node import create_tools_node
 from src.agent.nodes.validation.critical_action_validator import (
     create_critical_action_validator,
@@ -40,8 +38,7 @@ def create_browser_agent(llm: ChatOpenAI, tools: list):
 
     Complex task with validation:
         START → agent → critical_action_validator → human_in_loop →
-        tools → progress_analyzer → agent → quality_evaluator →
-        goal_validator → END
+        tools → agent → quality_evaluator → goal_validator → END
 
     Args:
         llm: ChatOpenAI instance
@@ -57,12 +54,10 @@ def create_browser_agent(llm: ChatOpenAI, tools: list):
     tools_node = create_tools_node(tools)
     critical_action_validator = create_critical_action_validator(llm)
     goal_validator = create_goal_validator(llm)
-    progress_analyzer = create_progress_analyzer(llm)
     strategy_adapter = create_strategy_adapter(llm)
     quality_evaluator = create_quality_evaluator(llm)
     self_corrector = create_self_corrector()
     human_in_loop = create_human_in_loop()
-    progress_reporter = create_progress_reporter()
     memory_manager = create_memory_manager(llm)
 
     # Initialize state graph
@@ -73,12 +68,10 @@ def create_browser_agent(llm: ChatOpenAI, tools: list):
     workflow.add_node("tools", tools_node)
     workflow.add_node("critical_action_validator", critical_action_validator)
     workflow.add_node("goal_validator", goal_validator)
-    workflow.add_node("progress_analyzer", progress_analyzer)
     workflow.add_node("strategy_adapter", strategy_adapter)
     workflow.add_node("quality_evaluator", quality_evaluator)
     workflow.add_node("self_corrector", self_corrector)
     workflow.add_node("human_in_loop", human_in_loop)
-    workflow.add_node("progress_reporter", progress_reporter)
     workflow.add_node("memory_manager", memory_manager)
 
     # Only define entry point - rest is Command-based
@@ -88,7 +81,7 @@ def create_browser_agent(llm: ChatOpenAI, tools: list):
     memory = MemorySaver()
     agent = workflow.compile(checkpointer=memory)
 
-    logger.info(f"Agent created with {len(tools)} tools and 11 nodes")
+    logger.info(f"Agent created with {len(tools)} tools and 9 nodes")
     logger.info("Flow control: Command API (nodes decide routing)")
 
     return agent
