@@ -175,6 +175,10 @@ def parse_target(target: str) -> ParsedSelector:
     if target.startswith("testid:"):
         return ParsedSelector(type="testid", value=target[7:])
 
+    # CSS multiple selector (contains comma) - e.g., "span, p, div"
+    if "," in target:
+        return ParsedSelector(type="css", value=target)
+
     # CSS selectors (start with . # or [)
     if target.startswith(".") or target.startswith("#") or target.startswith("["):
         return ParsedSelector(type="css", value=target)
