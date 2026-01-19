@@ -1,5 +1,7 @@
 """Tool execution node with error detection."""
 
+import json
+
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 
@@ -7,6 +9,53 @@ from src.agent.state import BrowserAgentState
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__, level="DEBUG")
+
+
+def _detect_error_in_results(tool_messages: list) -> tuple[str, str | None]:
+    """
+    Detect errors in tool result messages and categorize them.
+
+    Args:
+        tool_messages: List of tool result messages
+
+    Returns:
+        (error_type, error_message) tuple
+        error_type: "syntax_error", "viewport_error", "timeout", "none"
+        error_message: Raw error message if error detected
+    """
+    if not tool_messages:
+        return "none", None
+
+    # Check ALL tool messages (not just last) for errors
+    for message in tool_messages:
+        if not hasattr(message, "content"):
+            continue
+
+        content = str(message.content).lower()
+
+        # Playwright Syntax Errors (CRITICAL - must fix syntax)
+        if "invalidselectorerror" in content or "unexpected symbol" in content:
+            return "syntax_error", str(message.content)
+
+        if "is not a function" in content and ("slice" in content or "filter" in content or "map" in content):
+            return "syntax_error", str(message.content)
+
+        # Viewport Errors (need strategy change)
+        if "outside of the viewport" in content or "element is not visible" in content:
+            return "viewport_error", str(message.content)
+
+        # Timeout Errors - check for networkidle specific
+        if "timeouterror" in content:
+            if "networkidle" in content or "page.goto" in content:
+                return "timeout", str(message.content)
+            # Other timeouts - let agent handle
+            return "timeout_other", str(message.content)
+
+        # Stale Reference
+        if "ref not found" in content or "stale" in content:
+            return "stale_ref", str(message.content)
+
+    return "none", None
 
 
 def _validate_tab_creation(state: BrowserAgentState) -> tuple[bool, str]:
@@ -73,7 +122,7 @@ def create_tools_node(tools):
 
         Returns Command with:
         - update: Tool results, error tracking
-        - goto: "memory_manager", "progress_analyzer", or "progress_reporter"
+        - goto: "memory_manager"
         """
         logger.info("Tools node - executing tool calls")
 
@@ -87,9 +136,35 @@ def create_tools_node(tools):
         for i, msg in enumerate(tool_messages):
             if hasattr(msg, "name"):
                 logger.info(f"Tool result [{i}]: {msg.name}")
-                logger.debug(f"Tool content [{i}]: {msg.content[:500] if len(str(msg.content)) > 500 else msg.content}")
+                # Format content with proper Unicode (no escape sequences)
+                try:
+                    content = msg.content
+                    if isinstance(content, str):
+                        parsed = json.loads(content)
+                    else:
+                        parsed = content
+                    content_str = json.dumps(parsed, ensure_ascii=False)
+                except (json.JSONDecodeError, TypeError):
+                    content_str = str(msg.content)
+                logger.debug(f"Tool content [{i}]: {content_str[:500]}")
             else:
                 logger.debug(f"Message [{i}] type: {type(msg).__name__}")
+
+        # Detect errors in tool results
+        error_type, error_message = _detect_error_in_results(tool_messages)
+
+        # Route to self_corrector for auto-fixable errors
+        if error_type in ["syntax_error", "viewport_error", "timeout", "stale_ref"]:
+            logger.warning(f"Detected {error_type} - routing to self_corrector")
+            return Command(
+                update={
+                    "messages": tool_messages,
+                    "error_type": error_type,
+                    "error_message": error_message,
+                    "current_step": state.get("current_step", 0) + 1,
+                },
+                goto="self_corrector",
+            )
 
         # Validate tab creation sequence
         needs_reminder, reminder_msg = _validate_tab_creation(state)
@@ -102,40 +177,15 @@ def create_tools_node(tools):
             reminder = AIMessage(content=reminder_msg)
             tool_messages = list(tool_messages) + [reminder]
 
-        # Success - route based on message count instead of steps
-        message_count = len(state.get("messages", []))
-        last_check = state.get("message_count_at_last_check", 0)
-
-        # Глубокий анализ каждые 20 сообщений (complex tasks)
-        if message_count - last_check >= 20:
-            logger.info(f"Progress analysis at {message_count} messages")
-            return Command(
-                update={
-                    "messages": tool_messages,
-                    "message_count_at_last_check": message_count,
-                },
-                goto="progress_analyzer",
-            )
-
-        # Частые отчеты каждые 6 сообщений
-        if message_count - last_check >= 6:
-            logger.info(f"Progress report at {message_count} messages")
-            return Command(
-                update={
-                    "messages": tool_messages,
-                    "message_count_at_last_check": message_count,
-                },
-                goto="progress_reporter",
-            )
-
-        # Normal flow - through memory_manager to agent
-        # Memory manager will check if summarization is needed and decide automatically
-        logger.info("Tool execution successful - routing through memory_manager")
+        # Success - route directly to agent
+        # Суммаризация отключена - routing напрямую без memory_manager
+        logger.info("Tool execution successful - routing to agent")
         return Command(
             update={
                 "messages": tool_messages,
+                "current_step": state.get("current_step", 0) + 1,
             },
-            goto="memory_manager",
+            goto="agent",
         )
 
     return tools_node

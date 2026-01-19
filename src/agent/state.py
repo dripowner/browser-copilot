@@ -43,3 +43,8 @@ class BrowserAgentState(TypedDict):
     # Quality metrics
     quality_score: Optional[float]  # Final quality evaluation
     goal_achieved: bool  # Did we meet the original goal?
+
+    # Error tracking (for self_corrector)
+    error_type: Optional[str]  # Type of last error (syntax_error, viewport_error, timeout, etc.)
+    error_message: Optional[str]  # Raw error message from tool
+    viewport_error_count: int  # Track consecutive viewport errors for strategy switch
