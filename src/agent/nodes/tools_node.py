@@ -21,7 +21,7 @@ def _detect_error_in_results(tool_messages: list) -> tuple[str, str | None]:
     Returns:
         (error_type, error_message) tuple
         error_type: "viewport_error", "timeout", "timeout_other",
-                    "stale_ref", "element_not_found", "none"
+                    "stale_ref", "element_not_found", "generic_error", "none"
         error_message: Raw error message if error detected
     """
     if not tool_messages:
@@ -54,9 +54,14 @@ def _detect_error_in_results(tool_messages: list) -> tuple[str, str | None]:
             "no elements found" in content
             or "element not found" in content
             or ("count" in content and "=== 0" in content)
-            or ('"success": false' in content and "not found" in content)
         ):
             return "element_not_found", str(message.content)
+
+        # Generic error detection - CATCH-ALL (check LAST)
+        # Catches: {"success": false, ...} from browser tools
+        # Catches: "Error: ..." from browser_run_custom
+        if '"success": false' in content or content.startswith("error:"):
+            return "generic_error", str(message.content)
 
     return "none", None
 
@@ -176,6 +181,19 @@ def create_tools_node(tools):
                 goto="self_corrector",
             )
 
+        # Handle generic errors (not recoverable via self_corrector)
+        if error_type == "generic_error":
+            logger.warning(f"Tool returned error - routing to agent: {error_message[:200] if error_message else 'unknown'}")
+            return Command(
+                update={
+                    "messages": tool_messages,
+                    "error_type": error_type,
+                    "error_message": error_message,
+                    "current_step": state.get("current_step", 0) + 1,
+                },
+                goto="agent",
+            )
+
         # Validate tab creation sequence
         needs_reminder, reminder_msg = _validate_tab_creation(state)
         if needs_reminder:
@@ -188,7 +206,6 @@ def create_tools_node(tools):
             tool_messages = list(tool_messages) + [reminder]
 
         # Success - route directly to agent
-        # Суммаризация отключена - routing напрямую без memory_manager
         logger.info("Tool execution successful - routing to agent")
         return Command(
             update={
