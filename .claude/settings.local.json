@@ -29,7 +29,9 @@
       "mcp__serena__list_memories",
       "mcp__serena__edit_memory",
       "mcp__github__get_file_contents",
-      "mcp__github__search_code"
+      "mcp__github__search_code",
+      "mcp__serena__think_about_task_adherence",
+      "mcp__serena__think_about_whether_you_are_done"
     ]
   }
 }
