@@ -141,18 +141,19 @@ MCP сервер chrome-devtools-mcp запустится автоматичес
 
 ```text
 Host Machine:
-  User CLI → LangGraph Agent → LLM (OpenAI-compatible) → Browser Tools → MCP Client
-                                                                            ↓
-  Browser (с --remote-debugging-port) ←──────────────── chrome-devtools-mcp
-                                                        (автозапуск через stdio)
+  User CLI → LangGraph Agent → LLM → High-Level Browser Tools → BrowserExecutor → MCP Client
+                                                                                       ↓
+  Browser (с --remote-debugging-port) ←──────────────────────────────── @playwright/mcp
+                                                                        (автозапуск через stdio)
 ```
 
 **Ключевые компоненты:**
 
 - **LangGraph Command API** - модульная архитектура агента с явным управлением потоком
-- **Planning Prompt** - заставляет LLM планировать перед выполнением
+- **High-Level Browser Tools** - 20+ tools с инкапсулированным Playwright кодом (LLM не пишет код)
+- **Smart Target Format** - автоопределение селекторов (CSS, role, text, placeholder, label)
 - **MCP Integration** - официальная интеграция через langchain-mcp-adapters
-- **chrome-devtools-mcp** - MCP сервер для управления браузером через CDP
+- **@playwright/mcp** - MCP сервер для управления браузером через CDP
 - **Generic LLM Client** - работает с любым OpenAI-compatible API
 - **Автоматический запуск** - MCP сервер запускается автоматически при старте приложения
 

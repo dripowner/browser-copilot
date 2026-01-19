@@ -27,7 +27,9 @@
       "Bash(xargs ls:*)",
       "mcp__serena__read_memory",
       "mcp__serena__list_memories",
-      "mcp__serena__edit_memory"
+      "mcp__serena__edit_memory",
+      "mcp__github__get_file_contents",
+      "mcp__github__search_code"
     ]
   }
 }

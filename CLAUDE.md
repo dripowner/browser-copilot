@@ -2,6 +2,33 @@
 
 Руководство для разработки и доработки Browser Copilot Agent.
 
+## ⚠️ КРИТИЧЕСКОЕ ПРАВИЛО для всех изменений промптов
+
+**НИКОГДА не добавляй кейс-специфичные инструкции в промпты!**
+
+Агент ДОЛЖЕН уметь работать в ЛЮБОЙ ситуации через reasoning, а не через заученные паттерны.
+
+**НЕ ДЕЛАЙ:**
+
+- ❌ Конкретные инструкции для конкретных сайтов (Яндекс Лавка, Gmail и т.д.)
+- ❌ Точные последовательности действий для задач (как добавить в корзину, как отправить письмо)
+- ❌ Примеры кода для специфичных кейсов
+- ❌ "Если видишь X, делай Y" правила для конкретных ситуаций
+
+**ДЕЛАЙ:**
+
+- ✅ Общие принципы работы (баланс exploration/action)
+- ✅ Универсальные паттерны (проверка вкладок ВСЕГДА)
+- ✅ Обучение reasoning процессу
+- ✅ Фундаментальные правила безопасности и надежности
+
+**Почему это важно:**
+
+- Агент должен ДУМАТЬ, а не следовать скриптам
+- Каждый сайт уникален - невозможно описать все ситуации
+- Кейс-специфичные инструкции раздувают промпты и снижают обобщающую способность
+- Агент должен адаптироваться к новым ситуациям через reasoning
+
 ## Архитектура
 
 ### Обзор
@@ -11,7 +38,24 @@ src/
 ├── agent/                  # AI Agent (LangGraph)
 │   ├── graph.py           # Main graph with Command API
 │   ├── state.py           # BrowserAgentState definition
-│   ├── prompts.py         # System prompt с планированием
+│   ├── tools/             # High-level browser tools (NEW)
+│   │   ├── __init__.py        # get_browser_tools() export
+│   │   ├── _executor.py       # BrowserExecutor singleton
+│   │   ├── _templates.py      # JS helpers
+│   │   ├── _selectors.py      # Smart target parsing
+│   │   ├── navigation.py      # browser_navigate
+│   │   ├── tabs.py            # browser_list_tabs, browser_switch_tab
+│   │   ├── extraction.py      # browser_get_text, browser_get_attribute, browser_get_page_info
+│   │   ├── interaction.py     # browser_click, browser_fill, etc.
+│   │   ├── waiting.py         # browser_wait_for, browser_wait_for_load
+│   │   ├── special.py         # browser_close_modal, browser_scroll, etc.
+│   │   ├── fallback.py        # browser_run_custom
+│   │   └── user_confirmation.py # request_user_confirmation (HITL)
+│   ├── prompts/           # System prompts (modular)
+│   │   ├── __init__.py        # SYSTEM_PROMPT export
+│   │   ├── base.py            # Base role and ReAct structure
+│   │   ├── browser_rules.py   # Minimal browser rules
+│   │   └── error_recovery.py  # Error handling strategies
 │   └── nodes/             # Modular nodes (Command-based routing)
 │       ├── agent_node.py          # Core reasoning
 │       ├── tools_node.py          # Tool execution
@@ -19,13 +63,11 @@ src/
 │       │   ├── critical_action_validator.py
 │       │   └── goal_validator.py
 │       ├── reflection/            # Reflection nodes
-│       │   ├── progress_analyzer.py
 │       │   ├── strategy_adapter.py
 │       │   ├── quality_evaluator.py
 │       │   └── self_corrector.py
 │       └── special/               # Special nodes
 │           ├── human_in_loop.py
-│           ├── progress_reporter.py
 │           └── memory_manager.py
 ├── ui/                    # User Interface
 │   └── cli.py            # Rich-based CLI with interrupt handling
@@ -128,11 +170,11 @@ uv run ruff format src/
 ```python
 workflow = StateGraph(BrowserAgentState)
 
-# Add all 11 nodes
+# Add all 9 nodes
 workflow.add_node("agent", agent_node)
 workflow.add_node("tools", tools_node)
 workflow.add_node("critical_action_validator", critical_action_validator)
-# ... 9 more nodes
+# ... 6 more nodes
 
 # Only entry point - rest via Command
 workflow.add_edge(START, "agent")
@@ -157,8 +199,7 @@ START → agent → tools → agent → goal_validator → END
 
 ```text
 START → agent → critical_action_validator → human_in_loop →
-tools → progress_analyzer → agent → quality_evaluator →
-goal_validator → END
+tools → agent → quality_evaluator → goal_validator → END
 ```
 
 **Преимущества:**
@@ -168,17 +209,75 @@ goal_validator → END
 - **Гибкий routing** - можно пропускать ненужные ноды для простых задач
 - **Модульность** - каждая нода в отдельном файле
 
-### 2. Browser Tool через MCP
+### 2. High-Level Browser Tools
 
-Агент использует **ТОЛЬКО ОДИН инструмент** из @playwright/mcp для всех операций с браузером.
+Агент использует **высокоуровневые Python tools**, которые инкапсулируют Playwright код внутри. LLM только выбирает tool и параметры, не пишет код.
 
-**browser_run_code:**
+**Архитектура:**
 
-- Выполнение Playwright кода в браузере
-- Формат: `async (page) => { ... }` где `page` - Playwright Page object
-- Доступ к полному Playwright Page API
+```
+LLM выбирает tool → browser_click(target=".btn") → BrowserExecutor → browser_run_code (MCP) → Browser
+```
 
-**Фильтрация MCP tools в main.py:**
+**Структура tools:**
+
+```text
+src/agent/tools/
+├── __init__.py          # get_browser_tools() - экспорт всех tools
+├── _executor.py         # BrowserExecutor singleton (хранит MCP tool)
+├── _templates.py        # JS helpers (cleanText, async wrapper)
+├── _selectors.py        # Smart target parsing
+├── navigation.py        # browser_navigate (Tab Selection Workflow)
+├── tabs.py              # browser_list_tabs, browser_switch_tab
+├── extraction.py        # browser_get_text, browser_get_attribute, browser_get_page_info
+├── interaction.py       # browser_click, browser_fill, browser_press_key, browser_select, browser_hover, browser_check
+├── waiting.py           # browser_wait_for, browser_wait_for_load
+├── special.py           # browser_close_modal, browser_scroll, browser_screenshot, browser_go_back, browser_reload
+├── fallback.py          # browser_run_custom (edge-cases only)
+└── user_confirmation.py # request_user_confirmation (HITL)
+```
+
+**Список tools (20 browser + 1 HITL):**
+
+| Категория | Tools |
+|-----------|-------|
+| Навигация | `browser_navigate` |
+| Вкладки | `browser_list_tabs`, `browser_switch_tab` |
+| Взаимодействие | `browser_click`, `browser_fill`, `browser_press_key`, `browser_select`, `browser_hover`, `browser_check` |
+| Извлечение | `browser_get_text`, `browser_get_attribute`, `browser_get_page_info` |
+| Ожидание | `browser_wait_for`, `browser_wait_for_load` |
+| Специальные | `browser_close_modal`, `browser_scroll`, `browser_screenshot`, `browser_go_back`, `browser_reload` |
+| Fallback | `browser_run_custom` |
+| HITL | `request_user_confirmation` |
+
+**Smart Target Format:**
+
+Параметр `target` во всех tools поддерживает автоматическое определение типа селектора:
+
+```python
+# CSS селекторы
+browser_click(".submit-btn")
+browser_click("#login-button")
+browser_click("[data-testid='submit']")
+
+# Role паттерны (role:name)
+browser_click("button:Submit")      # → getByRole('button', {name: 'Submit'})
+browser_click("link:Learn more")    # → getByRole('link', {name: 'Learn more'})
+
+# Text паттерны
+browser_click("text:Add to cart")   # → getByText('Add to cart')
+
+# Placeholder (для inputs)
+browser_fill("placeholder:Email", "user@example.com")
+
+# Label
+browser_fill("label:Username", "john")
+
+# TestId
+browser_click("testid:submit-btn")  # → getByTestId('submit-btn')
+```
+
+**Инициализация в main.py:**
 
 ```python
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -187,45 +286,53 @@ mcp_client = MultiServerMCPClient({
     "browsermcp": {
         "transport": "stdio",
         "command": "npx",
-        "args": [
-            "-y",
-            "@playwright/mcp@latest",
-            "--cdp-endpoint",
-            "http://127.0.0.1:9222",
-            "--snapshot-mode",
-            "none",
-            "--image-responses",
-            "omit",
-        ],
+        "args": ["-y", "@playwright/mcp@latest", "--cdp-endpoint", "http://127.0.0.1:9222", ...],
     }
 })
 
-# Получить все MCP tools
 all_mcp_tools = await mcp_client.get_tools()
 
-# ФИЛЬТР: Оставить ТОЛЬКО browser_run_code (остальные нестабильны)
-mcp_tools = [tool for tool in all_mcp_tools if tool.name == "browser_run_code"]
+# Найти browser_run_code для ВНУТРЕННЕГО использования (LLM его не видит!)
+browser_run_code_tool = next(t for t in all_mcp_tools if t.name == "browser_run_code")
 
-# Добавить custom tools (HITL)
-tools = mcp_tools + [request_user_confirmation]
+# Инициализировать executor
+from src.agent.tools._executor import BrowserExecutor
+BrowserExecutor.initialize(browser_run_code_tool)
+
+# Получить высокоуровневые tools для LLM
+from src.agent.tools import get_browser_tools
+browser_tools = get_browser_tools()  # 20 tools
+tools = browser_tools + [request_user_confirmation]
 ```
 
-**Playwright Page API включает:**
+**BrowserExecutor:**
 
-- Навигация: `page.goto()`, `page.goBack()`, `page.reload()`
-- Локаторы: `page.getByRole()`, `page.getByText()`, `page.locator()`
-- Действия: `click()`, `fill()`, `press()`, `check()`, `selectOption()`
-- Извлечение: `textContent()`, `getAttribute()`, `title()`
-- Вкладки: `page.context().pages()`, `newPage()`, `bringToFront()`
-- Ожидание: `waitForSelector()`, `waitForLoadState()`, автоматическое ожидание
+Singleton, который хранит ссылку на MCP tool и используется всеми browser tools:
+
+```python
+class BrowserExecutor:
+    _browser_run_code_tool = None
+
+    @classmethod
+    def initialize(cls, tool):
+        cls._browser_run_code_tool = tool
+
+    @classmethod
+    async def execute(cls, code: str) -> str:
+        result = await cls._browser_run_code_tool.ainvoke({"code": code})
+        # Обработка разных форматов ответа (str, list, dict)
+        return extracted_text
+```
 
 **Преимущества:**
 
-- ТОЛЬКО ОДИН надежный инструмент вместо множества нестабильных
-- Полный контроль через Playwright API
-- Автоматическое ожидание элементов (до 30 сек)
-- Современные локаторы (accessibility-first: getByRole, getByText)
-- MCP сервер запускается автоматически при старте приложения
+- ✅ LLM не пишет код - только выбирает параметры
+- ✅ Playwright паттерны инкапсулированы в tools
+- ✅ Системный промпт уменьшен на ~1800 строк
+- ✅ Tab Selection Workflow встроен в `browser_navigate`
+- ✅ Post-action validation встроен в `browser_click`
+- ✅ CleanText helper встроен в extraction tools
+- ✅ Fallback через `browser_run_custom` для edge-cases
 
 **Выполнение tools через встроенный ToolNode:**
 
@@ -275,9 +382,7 @@ def tools_node(state: BrowserAgentState) -> Command:
         return Command(update={...}, goto="self_corrector")
     elif error_type != "none":
         # Обработка ошибки с retry
-    elif is_complex_task and step % 5 == 0:
-        # Анализ прогресса
-        return Command(update={...}, goto="progress_analyzer")
+        return Command(update={...}, goto="agent")
     else:
         # Обычный flow
         return Command(update={...}, goto="agent")
@@ -334,42 +439,34 @@ class BrowserAgentState(TypedDict):
 src/agent/prompts/
 ├── __init__.py              # Экспорты и готовые промпт константы
 ├── base.py                  # Базовая роль и ReAct loop структура
-├── browser_rules.py         # Браузер-специфичные правила (Playwright workflow)
-├── playwright_patterns.py   # NEW: Comprehensive Playwright Page API guide
-├── error_recovery.py        # Стратегии обработки ошибок (включая Playwright)
+├── browser_rules.py         # Минимальные правила (tools сами знают как работать)
+├── error_recovery.py        # Стратегии обработки ошибок
 └── examples/                # Few-shot reasoning patterns (НЕ синтаксис tools)
     ├── simple.py            # Базовые reasoning паттерны
     └── complex.py           # Сложные decision-making паттерны
 ```
 
+**ВАЖНО:** `playwright_patterns.py` удалён - весь Playwright код теперь инкапсулирован в high-level tools.
+
 #### Готовые промпт константы
 
-Файл [\_\_init\_\_.py](src/agent/prompts/__init__.py) экспортирует 3 готовых варианта:
+Файл [\_\_init\_\_.py](src/agent/prompts/__init__.py) экспортирует:
 
 ```python
 from src.agent.prompts import (
-    SYSTEM_PROMPT,          # Стандартный: роль + правила + error recovery + примеры
-    SYSTEM_PROMPT_MINIMAL,  # Минимальный: без примеров (экономия токенов)
-    SYSTEM_PROMPT_COMPLEX,  # Расширенный: с дополнительными сложными примерами
+    SYSTEM_PROMPT,          # Стандартный: роль + правила + error recovery
 )
 ```
 
-**Композиция промптов** использует LangGraph-native подход с `"\n\n".join()`:
+**Композиция промптов:**
 
 ```python
-# Стандартный промпт (по умолчанию)
+# Стандартный промпт
+# PLAYWRIGHT_PATTERNS удалён - код инкапсулирован в browser tools
 # Tools описываются через bind_tools() - не дублируем в промпте
 SYSTEM_PROMPT = "\n\n".join([
     BASE_PROMPT,
-    BROWSER_RULES,
-    PLAYWRIGHT_PATTERNS,  # NEW: Comprehensive Playwright Page API guide
-    ERROR_RECOVERY_GUIDE,
-])
-
-# Минимальный промпт (25+ шагов) - без Playwright patterns для экономии
-SYSTEM_PROMPT_MINIMAL = "\n\n".join([
-    BASE_PROMPT,
-    BROWSER_RULES,
+    BROWSER_RULES,      # Минимальные правила (~55 строк вместо 200+)
     ERROR_RECOVERY_GUIDE,
 ])
 ```
@@ -404,26 +501,19 @@ else:
 - Docstrings функций используются как описания (например, `request_user_confirmation`)
 - Промпты НЕ дублируют эту информацию - экономия токенов и гибкость при смене MCP серверов
 
-**Browser Rules (browser_rules.py):**
+**Browser Rules (browser_rules.py) - МИНИМАЛЬНЫЙ:**
 
-- Политика управления вкладками с обязательным HITL подтверждением
-- Workflow: проверка существующих вкладок → создание новой при необходимости
-- Использование `page.context().pages()` для работы с вкладками (0-based индексация)
-- Правила использования browser_run_code с Playwright Page API
-- Современные локаторы (getByRole, getByText) вместо CSS селекторов
+Правила упрощены до ~55 строк, т.к. вся логика инкапсулирована в tools:
 
-**Playwright Patterns (playwright_patterns.py):**
-
-- Comprehensive справочник по Playwright Page API
-- Категории: Навигация, Локаторы, Действия, Извлечение данных, Вкладки
-- Ожидание и обработка ошибок
-- Best practices и типичные ошибки
-- Few-shot примеры для каждой категории операций
+- Exploration-first подход (сначала исследуй страницу)
+- Validation после действий (проверяй результат)
+- Smart Target Format (форматы селекторов)
+- Использование `browser_close_modal` для модалок
+- Правила использования `request_user_confirmation`
 
 **Error Recovery (error_recovery.py):**
 
 - Частые ошибки браузера: network timeout, element not interactive, auth required
-- Playwright API ошибки: TimeoutError, Element not visible, Execution context destroyed
 - Общий паттерн восстановления после ошибок
 - Критерии когда сдаться (3 попытки)
 
@@ -487,17 +577,15 @@ SYSTEM_PROMPT_CUSTOM = "\n\n".join([
 - `critical_action_validator` - проверка критических действий перед выполнением
 - `goal_validator` - проверка достижения цели задачи
 
-**Reflection Nodes (4):**
+**Reflection Nodes (3):**
 
-- `progress_analyzer` - анализ прогресса выполнения
 - `strategy_adapter` - смена стратегии при застревании
 - `quality_evaluator` - оценка качества результата
 - `self_corrector` - автоматическое исправление типичных ошибок
 
-**Special Nodes (4):**
+**Special Nodes (2):**
 
 - `human_in_loop` - запрос подтверждения от пользователя
-- `progress_reporter` - логирование progress updates для UI (не добавляет в messages)
 - `memory_manager` - сжатие истории сообщений
 
 #### Управление контекстом messages
@@ -514,10 +602,6 @@ SYSTEM_PROMPT_CUSTOM = "\n\n".join([
 - `quality_evaluator` - AIMessage с feedback (только при низком качестве)
 - `goal_validator` - AIMessage с feedback (только если цель не достигнута)
 - `memory_manager` - обновленные messages после суммаризации
-
-**НЕ добавляют в messages (только UI):**
-
-- `progress_reporter` - прогресс доступен через state/logs, не засоряет контекст
 
 Это критично для эффективного использования токенов и предотвращения преждевременной суммаризации.
 
@@ -614,9 +698,17 @@ tools = await mcp_client.get_tools()
 
 ### 9. Memory Management через LangMem
 
+**СТАТУС: СУММАРИЗАЦИЯ ОТКЛЮЧЕНА**
+
+Суммаризация временно отключена через routing в [tools_node.py](src/agent/nodes/tools_node.py:168-177).
+Вместо routing через `memory_manager`, агент идет напрямую на `agent`.
+
+**Причина отключения:**
+Агрессивная суммаризация приводила к потере критического контекста (работа с вкладками, текущее состояние задачи), что вызывало ошибки в выполнении.
+
 **Используется официальная библиотека:** `langmem` от LangChain
 
-Проект использует `SummarizationNode` из `langmem.short_term` для автоматической суммаризации истории сообщений.
+Нода `memory_manager` остается в коде и использует `SummarizationNode` из `langmem.short_term`, но не вызывается.
 
 **Конфигурация в [memory_manager.py](src/agent/nodes/special/memory_manager.py):**
 
@@ -789,84 +881,64 @@ def _detect_errors_in_results(tool_messages: list) -> tuple[str, str | None]:
 
 ### Работа с Browser Operations
 
-**ВАЖНО:** Агент использует **ТОЛЬКО browser_run_code** для всех операций с браузером.
+**ВАЖНО:** Агент использует **высокоуровневые browser tools**, а не raw Playwright код.
 
-Все операции выполняются через Playwright Page API внутри `browser_run_code`:
-
-```javascript
-browser_run_code(code=`async (page) => {
-  // Playwright Page API
-  await page.goto('https://example.com');
-  await page.getByRole('button', { name: 'Submit' }).click();
-  return await page.title();
-}`)
-```
-
-**Доступные операции через Playwright Page API:**
-
-**Навигация:**
-
-- `await page.goto(url)` - переход на URL
-- `await page.goBack()` - назад
-- `await page.reload()` - перезагрузка
-
-**Локаторы (современные, accessibility-first):**
-
-- `page.getByRole('button', { name: 'Submit' })` - по ARIA роли
-- `page.getByText('Click here')` - по видимому тексту
-- `page.getByPlaceholder('Email')` - по placeholder
-- `page.getByLabel('Username')` - по label
-- `page.locator('.selector')` - CSS/XPath (если необходимо)
-
-**Взаимодействие:**
-
-- `await locator.click()` - клик
-- `await locator.fill('text')` - ввод текста
-- `await locator.press('Enter')` - нажатие клавиши
-- `await locator.check()` / `uncheck()` - checkbox
-- `await locator.selectOption('value')` - select dropdown
-
-**Извлечение данных:**
-
-- `await locator.textContent()` - текст элемента
-- `await locator.getAttribute('href')` - атрибут
-- `await page.title()` - заголовок страницы
-- `await locator.count()` - количество элементов
-
-**Вкладки:**
-
-- `page.context().pages()` - список всех вкладок (0-based)
-- `await context.newPage()` - создать новую
-- `await targetPage.bringToFront()` - переключиться
-
-**Для добавления дополнительных возможностей:**
-
-1. Создайте дополнительный MCP сервер с custom tools
-2. Подключите его через `MultiServerMCPClient`:
+**Примеры использования tools:**
 
 ```python
-mcp_client = MultiServerMCPClient({
-    "browsermcp": {
-        "transport": "stdio",
-        "command": "npx",
-        "args": [
-            "-y",
-            "@playwright/mcp@latest",
-            "--cdp-endpoint",
-            "http://127.0.0.1:9222",
-            "--snapshot-mode",
-            "none",
-            "--image-responses",
-            "omit",
-        ],
-    },
-    "custom": {
-        "transport": "stdio",
-        "command": "python",
-        "args": ["./custom_mcp_server.py"]
-    }
-})
+# Навигация (автоматически создаёт новую вкладку если нужно)
+browser_navigate(url="https://example.com")
+
+# Клик с smart target
+browser_click(target="button:Submit")           # по role
+browser_click(target=".submit-btn")             # по CSS
+browser_click(target="text:Add to cart")        # по тексту
+
+# Заполнение форм
+browser_fill(target="placeholder:Email", text="user@example.com")
+browser_fill(target="label:Password", text="secret", submit=True)
+
+# Извлечение данных
+browser_get_text(target=".product-name", all_matches=True, limit=10)
+browser_get_attribute(target="link:Learn more", attribute="href")
+browser_get_page_info()  # URL и title
+
+# Ожидание
+browser_wait_for(target=".loading", state="hidden")
+browser_wait_for_load(state="domcontentloaded")
+
+# Управление вкладками
+browser_list_tabs()
+browser_switch_tab(domain="gmail.com")
+
+# Специальные
+browser_close_modal(strategy="auto")
+browser_scroll(direction="down", amount=500)
 ```
+
+**Добавление новых browser tools:**
+
+1. Создайте файл в `src/agent/tools/` (например `my_tool.py`)
+2. Используйте `BrowserExecutor.execute()` для Playwright кода:
+
+```python
+from langchain_core.tools import tool
+from src.agent.tools._executor import BrowserExecutor
+from src.agent.tools._templates import build_async_function
+
+@tool
+async def browser_my_action(target: str) -> str:
+    """Docstring будет использован как описание tool для LLM."""
+    code_body = f"""
+    const locator = page.locator('{target}');
+    // Playwright код...
+    return JSON.stringify({{ success: true }});
+    """
+    code = build_async_function(code_body)
+    return await BrowserExecutor.execute(code)
+```
+
+3. Добавьте экспорт в `src/agent/tools/__init__.py`
 
 ### Human-in-the-Loop уже встроен
 
@@ -970,7 +1042,7 @@ llm = ChatOpenAI(
 LangGraph автоматически логирует переходы между нодами:
 
 ```text
-2026-01-15 - src.agent.graph - INFO - Agent created with 11 nodes
+2026-01-15 - src.agent.graph - INFO - Agent created with 9 nodes
 2026-01-15 - src.agent.nodes.agent_node - INFO - Agent reasoning at step 0
 2026-01-15 - src.agent.nodes.agent_node - INFO - Routing to: tools
 2026-01-15 - src.agent.nodes.tools_node - INFO - Executing tools
@@ -1063,6 +1135,9 @@ mcp_logger.setLevel(logging.DEBUG)
 - [x] Special нод (human-in-the-loop, error recovery, progress reporting, memory management)
 - [x] Type-safe state management
 - [x] Interrupt handling в CLI
+- [x] **High-level Browser Tools** - 20 tools с инкапсулированным Playwright кодом
+- [x] **Smart Target Format** - автоопределение типа селектора (CSS, role, text, etc.)
+- [x] **Tab Selection Workflow** - автоматическое управление вкладками в browser_navigate
 
 ### Ближайшие улучшения
 
@@ -1073,7 +1148,6 @@ mcp_logger.setLevel(logging.DEBUG)
 
 ### Долгосрочные цели
 
-- [ ] Multi-tab/multi-window поддержка
 - [ ] Vision capabilities (анализ скриншотов)
 - [ ] Персистентная память задач
 - [ ] Web UI вместо CLI
