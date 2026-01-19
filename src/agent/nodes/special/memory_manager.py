@@ -25,8 +25,13 @@ def create_memory_manager(llm: ChatOpenAI):
         Memory management node function
     """
 
-    # Create model for summarization with token limit
-    summarization_model = llm.bind(max_tokens=256)
+    # Create model for summarization with larger token limit
+    # Note: SummarizationNode has built-in instructions for preserving context
+    # We rely on max_summary_tokens (4096) to give enough space for detailed summaries
+    summarization_model = llm.bind(
+        max_tokens=4096,  # Large enough to generate full summary in one call
+        temperature=0.3,  # Lower temperature for consistent summarization
+    )
 
     # Initialize SummarizationNode from LangMem
     summarization_node_impl = SummarizationNode(
@@ -34,7 +39,7 @@ def create_memory_manager(llm: ChatOpenAI):
         model=summarization_model,
         max_tokens=20000,  # Maximum history size
         max_tokens_before_summary=16000,  # Start summarizing when exceeds
-        max_summary_tokens=1200,  # Maximum size of summary
+        max_summary_tokens=4096,  # INCREASED: More space for preserving context
         # Output to standard messages field
         output_messages_key="messages",
     )

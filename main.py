@@ -70,34 +70,37 @@ async def main() -> int:
         try:
             all_mcp_tools = await mcp_client.get_tools()
 
-            # ФИЛЬТР: Оставить ТОЛЬКО browser_run_code
-            mcp_tools = [tool for tool in all_mcp_tools if tool.name == "browser_run_code"]
-
-            console.print(
-                f"[green]✓ Отфильтровано: {len(mcp_tools)} из {len(all_mcp_tools)} MCP tools[/green]"
-            )
-            console.print(
-                f"[yellow]  Используется ТОЛЬКО: {[tool.name for tool in mcp_tools]}[/yellow]"
+            # Найти browser_run_code для внутреннего использования
+            browser_run_code_tool = next(
+                (tool for tool in all_mcp_tools if tool.name == "browser_run_code"),
+                None,
             )
 
-            # Log tool names for debugging
-            logger.info(f"Available MCP tools: {[tool.name for tool in all_mcp_tools]}")
-            logger.info(f"Filtered to use: {[tool.name for tool in mcp_tools]}")
-
-            if len(mcp_tools) == 0:
+            if browser_run_code_tool is None:
                 console.print(
                     "[red]✗ browser_run_code не найден в MCP сервере[/red]"
                 )
                 return 1
 
-            # Добавляем custom tools для HITL
+            logger.info(f"Available MCP tools: {[tool.name for tool in all_mcp_tools]}")
+            console.print("[green]✓ Найден browser_run_code в MCP сервере[/green]")
+
+            # Инициализация BrowserExecutor с MCP tool
+            from src.agent.tools._executor import BrowserExecutor
+
+            BrowserExecutor.initialize(browser_run_code_tool)
+            console.print("[green]✓ BrowserExecutor инициализирован[/green]")
+
+            # Получение высокоуровневых browser tools
+            from src.agent.tools import get_browser_tools
             from src.agent.tools.user_confirmation import request_user_confirmation
 
-            custom_tools = [request_user_confirmation]
-            tools = mcp_tools + custom_tools
+            browser_tools = get_browser_tools()
+            tools = browser_tools + [request_user_confirmation]
 
             console.print(
-                f"[green]✓ Итого инструментов: {len(tools)} (1 browser + 1 HITL)[/green]"
+                f"[green]✓ Итого инструментов: {len(tools)} "
+                f"({len(browser_tools)} browser + 1 HITL)[/green]"
             )
             logger.info(f"All tools: {[tool.name for tool in tools]}")
 
