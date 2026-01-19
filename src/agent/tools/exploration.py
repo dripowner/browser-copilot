@@ -385,3 +385,242 @@ async def browser_explore_page(
             {"success": False, "error": f"Invalid response: {result}"},
             ensure_ascii=False,
         )
+
+
+@tool
+async def browser_inspect_container(
+    target: str,
+    depth: int = 2,
+    include_text: bool = True,
+    max_children: int = 20,
+) -> str:
+    """
+    Inspect DOM structure of a container to understand how data is organized.
+
+    USE THIS TOOL when you need to extract data (like product names, prices, list items)
+    but don't know the correct selectors. It shows the DOM tree structure with classes
+    and text content, helping you find the right selectors for browser_get_text.
+
+    Target formats:
+    - CSS: ".cart-items", "#product-list", "[class*='Cart']"
+    - Role: "list", "table"
+    - Text: "text:Products"
+
+    Args:
+        target: Container selector to inspect
+        depth: How deep to traverse children (default: 2, max: 4)
+        include_text: Include text content of elements (default: True)
+        max_children: Max children per element to show (default: 20)
+
+    Returns:
+        JSON with DOM structure showing:
+        - tag: HTML tag name
+        - classes: CSS classes (useful for selectors)
+        - text: Text content (if include_text=True)
+        - children: Nested child elements (up to depth)
+
+    Example use case:
+        1. browser_inspect_container(target="[class*='cart']", depth=2)
+        2. See structure like: CartItem > ProductName (class="item-title")
+        3. Use: browser_get_text(target=".item-title", all_matches=True)
+    """
+    from src.agent.tools._selectors import target_to_locator_js
+
+    locator_js = target_to_locator_js(target, page_var="targetPage")
+    depth = min(depth, 4)  # Cap depth to prevent huge outputs
+
+    code_body = f"""
+    const locator = {locator_js};
+    const maxDepth = {depth};
+    const includeText = {str(include_text).lower()};
+    const maxChildren = {max_children};
+
+    const count = await locator.count();
+
+    if (count === 0) {{
+      return JSON.stringify({{
+        success: false,
+        error: 'No elements found matching the selector',
+        suggestion: 'Try a broader selector like "div", "[class*=\\'cart\\']", or use browser_explore_page first'
+      }});
+    }}
+
+    function cleanText(text) {{
+      if (!text) return '';
+      return text
+        .replace(/\\xAD/g, '')
+        .replace(/[\\u200B-\\u200D\\uFEFF\\xA0]/g, ' ')
+        .replace(/\\s+/g, ' ')
+        .trim()
+        .substring(0, 100);
+    }}
+
+    function getClassList(el) {{
+      const classes = el.className;
+      if (!classes || typeof classes !== 'string') return [];
+      return classes.split(/\\s+/).filter(c => c.length > 0);
+    }}
+
+    function inspectElement(el, currentDepth) {{
+      const tag = el.tagName.toLowerCase();
+      const classes = getClassList(el);
+      const id = el.id || null;
+
+      const result = {{
+        tag: tag,
+      }};
+
+      if (id) result.id = id;
+      if (classes.length > 0) result.classes = classes;
+
+      // Add useful attributes
+      const href = el.getAttribute('href');
+      const dataTestId = el.getAttribute('data-testid') || el.getAttribute('data-test-id');
+      if (href) result.href = href.substring(0, 80);
+      if (dataTestId) result.testId = dataTestId;
+
+      // Add text content (direct text, not from children)
+      if (includeText) {{
+        // Get only direct text nodes
+        let directText = '';
+        for (const node of el.childNodes) {{
+          if (node.nodeType === Node.TEXT_NODE) {{
+            directText += node.textContent;
+          }}
+        }}
+        directText = cleanText(directText);
+        if (directText) result.text = directText;
+
+        // Also get full innerText for leaf nodes
+        if (el.children.length === 0) {{
+          const fullText = cleanText(el.innerText);
+          if (fullText && fullText !== directText) {{
+            result.text = fullText;
+          }}
+        }}
+      }}
+
+      // Recurse into children
+      if (currentDepth < maxDepth && el.children.length > 0) {{
+        const children = [];
+        const childCount = Math.min(el.children.length, maxChildren);
+        for (let i = 0; i < childCount; i++) {{
+          children.push(inspectElement(el.children[i], currentDepth + 1));
+        }}
+        if (children.length > 0) {{
+          result.children = children;
+          if (el.children.length > maxChildren) {{
+            result.moreChildren = el.children.length - maxChildren;
+          }}
+        }}
+      }} else if (el.children.length > 0) {{
+        result.childCount = el.children.length;
+      }}
+
+      return result;
+    }}
+
+    // Inspect first matching element
+    const handle = await locator.first().elementHandle();
+    if (!handle) {{
+      return JSON.stringify({{
+        success: false,
+        error: 'Could not get element handle'
+      }});
+    }}
+
+    const structure = await targetPage.evaluate(
+      ({{ el, maxDepth, includeText, maxChildren }}) => {{
+        // Re-define functions inside evaluate context
+        function cleanText(text) {{
+          if (!text) return '';
+          return text
+            .replace(/\\xAD/g, '')
+            .replace(/[\\u200B-\\u200D\\uFEFF\\xA0]/g, ' ')
+            .replace(/\\s+/g, ' ')
+            .trim()
+            .substring(0, 100);
+        }}
+
+        function getClassList(el) {{
+          const classes = el.className;
+          if (!classes || typeof classes !== 'string') return [];
+          return classes.split(/\\s+/).filter(c => c.length > 0);
+        }}
+
+        function inspectElement(el, currentDepth) {{
+          const tag = el.tagName.toLowerCase();
+          const classes = getClassList(el);
+          const id = el.id || null;
+
+          const result = {{ tag }};
+
+          if (id) result.id = id;
+          if (classes.length > 0) result.classes = classes;
+
+          const href = el.getAttribute('href');
+          const dataTestId = el.getAttribute('data-testid') || el.getAttribute('data-test-id');
+          if (href) result.href = href.substring(0, 80);
+          if (dataTestId) result.testId = dataTestId;
+
+          if (includeText) {{
+            let directText = '';
+            for (const node of el.childNodes) {{
+              if (node.nodeType === Node.TEXT_NODE) {{
+                directText += node.textContent;
+              }}
+            }}
+            directText = cleanText(directText);
+            if (directText) result.text = directText;
+
+            if (el.children.length === 0) {{
+              const fullText = cleanText(el.innerText);
+              if (fullText && fullText !== directText) {{
+                result.text = fullText;
+              }}
+            }}
+          }}
+
+          if (currentDepth < maxDepth && el.children.length > 0) {{
+            const children = [];
+            const childCount = Math.min(el.children.length, maxChildren);
+            for (let i = 0; i < childCount; i++) {{
+              children.push(inspectElement(el.children[i], currentDepth + 1));
+            }}
+            if (children.length > 0) {{
+              result.children = children;
+              if (el.children.length > maxChildren) {{
+                result.moreChildren = el.children.length - maxChildren;
+              }}
+            }}
+          }} else if (el.children.length > 0) {{
+            result.childCount = el.children.length;
+          }}
+
+          return result;
+        }}
+
+        return inspectElement(el, 0);
+      }},
+      {{ el: handle, maxDepth, includeText, maxChildren }}
+    );
+
+    return JSON.stringify({{
+      success: true,
+      matchCount: count,
+      structure: structure,
+      tip: 'Use class names from "classes" field to build selectors like ".className" or "[class*=\\'partial\\']"'
+    }});
+"""
+
+    code = build_async_function(code_body, use_target_page=True)
+    result = await BrowserExecutor.execute(code)
+
+    try:
+        parsed = json.loads(result)
+        return json.dumps(parsed, ensure_ascii=False, indent=2)
+    except json.JSONDecodeError:
+        return json.dumps(
+            {"success": False, "error": f"Invalid response: {result}"},
+            ensure_ascii=False,
+        )

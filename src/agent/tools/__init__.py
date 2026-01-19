@@ -15,7 +15,7 @@ Usage:
 """
 
 from src.agent.tools._executor import BrowserExecutor
-from src.agent.tools.exploration import browser_explore_page
+from src.agent.tools.exploration import browser_explore_page, browser_inspect_container
 from src.agent.tools.extraction import (
     browser_get_attribute,
     browser_get_page_info,
@@ -51,6 +51,7 @@ __all__ = [
     "BrowserExecutor",
     # Exploration
     "browser_explore_page",
+    "browser_inspect_container",
     # Navigation
     "browser_navigate",
     # Tabs
@@ -107,6 +108,7 @@ def get_browser_tools() -> list:
     return [
         # Exploration (USE FIRST on new pages!)
         browser_explore_page,
+        # browser_inspect_container,  # Временно отключен - влияет на reasoning LLM
         # Navigation
         browser_navigate,
         # Tabs
